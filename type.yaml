@@ -1,0 +1,45 @@
+name: typescript
+description: 'TypeScript/Node.js development container with PostgreSQL'
+image_name: ts-agent
+label: ac_agent
+
+ports:
+  - name: ssh
+    host_base: 2600
+    container: 22
+  - name: http
+    host_base: 3000
+    container: 3000
+  - name: postgres
+    host_base: 5600
+    container: 5432
+
+mounts:
+  - name: workspace
+    type: bind
+    container: /home/agent/workspace
+  - name: claude
+    type: shared
+    container: /home/agent/.claude
+  - name: npm-global
+    type: volume
+    container: /home/agent/.npm-global
+  - name: pnpm-store
+    type: volume
+    container: /home/agent/.pnpm-store
+  - name: postgres
+    type: volume
+    container: /var/lib/postgresql/18/main
+  - name: zsh-history
+    type: volume
+    container: /home/agent/.zsh_history
+
+resources:
+  memory: 4g
+  cpus: 2
+
+required_env:
+  - GIT_NAME
+  - GIT_EMAIL
+  - GITHUB_USERNAME
+  - GH_TOKEN

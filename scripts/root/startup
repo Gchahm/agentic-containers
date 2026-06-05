@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[startup] Configuring agent..."
+
+AGENT_HOME=/home/agent
+
+# Fix permissions for mounted volumes
+echo "[startup] Fixing permissions..."
+chown -R agent:agent "$AGENT_HOME/.npm-global" 2>/dev/null || true
+chown -R agent:agent "$AGENT_HOME/.pnpm-store" 2>/dev/null || true
+chown -R agent:agent "$AGENT_HOME/workspace" 2>/dev/null || true
+
+# Copy staged Claude configs if not present (bind mount hides files placed during build)
+if [[ ! -f "$AGENT_HOME/.claude/settings.json" ]]; then
+    echo "[startup] Initializing Claude configs from staged files..."
+    cp -r /opt/ac/claude/. "$AGENT_HOME/.claude/"
+    chown -R agent:agent "$AGENT_HOME/.claude"
+fi
+
+# Sync settings, CLAUDE.md, and skills from image (always overwrite to pick up updates)
+cp /opt/ac/claude/settings.json "$AGENT_HOME/.claude/settings.json" 2>/dev/null && chown agent:agent "$AGENT_HOME/.claude/settings.json" || true
+cp /opt/ac/claude/CLAUDE.md "$AGENT_HOME/.claude/CLAUDE.md" 2>/dev/null && chown agent:agent "$AGENT_HOME/.claude/CLAUDE.md" || true
+cp -r /opt/ac/claude/skills "$AGENT_HOME/.claude/" 2>/dev/null && chown -R agent:agent "$AGENT_HOME/.claude/skills" || true
+
+# Persist runtime env vars for login shells
+echo "[startup] Writing /etc/environment..."
+for var in CONTAINER_NAME GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL PLAYWRIGHT_BROWSERS_PATH PLAYWRIGHT_MCP_SANDBOX PLAYWRIGHT_MCP_OUTPUT_DIR; do
+    val="${!var:-}"
+    if [[ -n "$val" ]]; then
+        grep -q "^${var}=" /etc/environment 2>/dev/null && \
+            sed -i "s|^${var}=.*|${var}=${val}|" /etc/environment || \
+            echo "${var}=${val}" >> /etc/environment
+    fi
+done
+
+# Normalize token env
+export GH_TOKEN="${GH_TOKEN:-${GITHUB_OAUTH_TOKEN:-}}"
+
+# Substitute identity placeholders in templates
+if [[ -n "${GITHUB_USERNAME:-}" ]]; then
+    sed -i "s|{GITHUB_USERNAME}|${GITHUB_USERNAME}|g" "$AGENT_HOME/.config/gh/hosts.yml"
+    chmod 600 "$AGENT_HOME/.config/gh/hosts.yml"
+fi
+if [[ -n "${GIT_NAME:-}" ]] && [[ -n "${GIT_EMAIL:-}" ]]; then
+    sed -i "s|{GIT_NAME}|${GIT_NAME}|g; s|{GIT_EMAIL}|${GIT_EMAIL}|g" "$AGENT_HOME/.gitconfig"
+    chmod 600 "$AGENT_HOME/.gitconfig"
+fi
+
+# Configure git auth mode
+if [[ -r "$AGENT_HOME/.ssh/id_ed25519" ]]; then
+    echo "[startup] SSH key detected -- using SSH for git operations"
+    chmod 600 "$AGENT_HOME/.ssh/id_ed25519" 2>/dev/null || true
+    su agent -s /bin/bash -c 'git config --global url."git@github.com:".insteadOf "https://github.com/"'
+    su agent -s /bin/bash -c 'git config --global --unset-all credential.helper' 2>/dev/null || true
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        sed -i 's|git_protocol: https|git_protocol: ssh|' "$AGENT_HOME/.config/gh/hosts.yml"
+    fi
+elif [[ -n "${GH_TOKEN:-}" ]]; then
+    echo "[startup] No SSH key -- using HTTPS + token for git operations"
+    su agent -s /bin/bash -c "git config --global credential.helper \"!f() { echo username=${GH_TOKEN}; echo password=x-oauth-basic; }; f\""
+else
+    echo "[startup] WARNING: no SSH key and no GH_TOKEN -- git/gh auth will fail"
+fi
+
+# Install Claude Code CLI if not present
+if su agent -c "command -v claude >/dev/null 2>&1"; then
+    echo "[startup] Claude Code CLI already installed"
+else
+    echo "[startup] Installing Claude Code CLI..."
+    su agent -s /bin/bash -c "curl -fsSL https://claude.ai/install.sh | bash" 2>&1 || echo "[startup] WARNING: Claude Code install failed" >&2
+fi
+
+# Configure pnpm store
+echo "[startup] Configuring pnpm..."
+su agent -s /bin/bash -c "
+  export PATH=\"/home/agent/.local/share/pnpm:\$PATH\"
+  pnpm config set store-dir /home/agent/.pnpm-store --global 2>&1
+" || echo "[startup] WARNING: pnpm config failed" >&2
+
+# Ensure correct SSH permissions
+chown -R agent:agent "$AGENT_HOME/.ssh" 2>/dev/null || true
+chmod 700 "$AGENT_HOME/.ssh" 2>/dev/null || true
+
+# Clear startup-only secrets from memory
+unset GITHUB_USERNAME GIT_NAME GIT_EMAIL GITHUB_OAUTH_TOKEN
+
+# --------------------------------------------------------------------
+# PostgreSQL setup
+# --------------------------------------------------------------------
+echo "[startup] Configuring PostgreSQL..."
+chown -R postgres:postgres /var/lib/postgresql/18/main
+
+if ! grep -q "listen_addresses = '\*'" /etc/postgresql/18/main/postgresql.conf 2>/dev/null; then
+    echo "listen_addresses = '*'" >> /etc/postgresql/18/main/postgresql.conf
+fi
+if ! grep -q "host all all 0.0.0.0/0 md5" /etc/postgresql/18/main/pg_hba.conf 2>/dev/null; then
+    echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/18/main/pg_hba.conf
+fi
+
+echo "[startup] Starting PostgreSQL..."
+/usr/bin/pg_ctlcluster 18 main start
+
+echo "[startup] Waiting for PostgreSQL to be ready..."
+timeout 30 bash -c 'until pg_isready -h localhost >/dev/null 2>&1; do sleep 1; done'
+
+su - postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres';\"" 2>/dev/null || true
+echo "[startup] PostgreSQL is ready"
+
+# --------------------------------------------------------------------
+# Start SSH server
+# --------------------------------------------------------------------
+echo "[startup] Starting sshd..."
+exec /usr/sbin/sshd -D -e

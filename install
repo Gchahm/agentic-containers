@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TARGET="/usr/local/bin/ac"
+
+if [[ -L "$TARGET" ]] || [[ -f "$TARGET" ]]; then
+  echo "Replacing existing ac at $TARGET"
+fi
+
+ln -sf "${SCRIPT_DIR}/ac" "$TARGET"
+echo "Installed: ac -> ${SCRIPT_DIR}/ac"
+echo ""
+echo "Usage: ac --help"

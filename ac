@@ -1,0 +1,545 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================================
+# Agentic Containers (ac) - Standalone dev container manager
+# ============================================================================
+
+AC_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+AC_CONFIG_DIR="${HOME}/.config/ac"
+AC_LABEL="ac_agent"
+
+get_yaml_value() {
+  local key=$1
+  grep "^${key}:" "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/^[^:]*: *//' | tr -d "'"'"'
+}
+
+IMAGE_NAME=$(get_yaml_value "image_name")
+IMAGE_NAME="${IMAGE_NAME:-ts-agent}"
+
+# ============================================================================
+# Container management
+# ============================================================================
+
+next_available_index() {
+  local used
+  used=$(docker ps -a --filter "label=${AC_LABEL}" --format '{{.Label "ac_index"}}' 2>/dev/null | sort -n)
+  local index=1
+  while echo "$used" | grep -qx "$index"; do
+    index=$((index + 1))
+  done
+  echo "$index"
+}
+
+do_build() {
+  echo "Building ${IMAGE_NAME} image..."
+  docker build "$@" -t "$IMAGE_NAME" "$AC_DIR"
+}
+
+do_create() {
+  local NAME="${1:-}"
+  local INSTANCE="${2:-}"
+
+  if [[ -z "$NAME" ]]; then
+    echo "Usage: ac create <name> [index]"
+    exit 1
+  fi
+
+  # Auto-assign index
+  if [[ -z "$INSTANCE" ]]; then
+    INSTANCE=$(next_available_index)
+    echo "Auto-assigned index: $INSTANCE"
+  else
+    local existing
+    existing=$(docker ps -a --filter "label=ac_index=$INSTANCE" --format '{{.Names}}' 2>/dev/null)
+    if [[ -n "$existing" ]]; then
+      echo "Index $INSTANCE already in use by: $existing"
+      exit 1
+    fi
+  fi
+
+  # Load .env
+  if [[ -f "${AC_DIR}/.env" ]]; then
+    echo "Loading environment from .env"
+    set -a
+    source "${AC_DIR}/.env"
+    set +a
+  else
+    echo "No .env file found. Copy .env.example to .env and fill in values."
+    exit 1
+  fi
+
+  # Check required env vars
+  local required_env
+  required_env=$(sed -n '/^required_env:/,/^[a-z]/{ /^  *- /p; }' "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/.*- //')
+  local missing=()
+  for var in $required_env; do
+    if [[ -z "${!var:-}" ]]; then
+      missing+=("$var")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Missing required env vars in .env:"
+    for var in "${missing[@]}"; do echo "  - $var"; done
+    exit 1
+  fi
+
+  # SSH key check
+  SSH_LOGIN_PUB=${SSH_LOGIN_PUB:-id_ed25519.pub}
+  if [[ ! -f "${HOME}/.ssh/${SSH_LOGIN_PUB}" ]]; then
+    echo "SSH key ${SSH_LOGIN_PUB} not found!"
+    echo "Create one: ssh-keygen -t ed25519 -C 'your@email.com'"
+    exit 1
+  fi
+  SSH_LOGIN_PRIV="${SSH_LOGIN_PUB%.pub}"
+
+  # Claude Code auth (auto-sync from Keychain on macOS)
+  local SHARED_CLAUDE_DIR="${AC_CONFIG_DIR}/shared/claude"
+  local CREDS_FILE="${SHARED_CLAUDE_DIR}/.credentials.json"
+
+  if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && [[ -z "${ANTHROPIC_AUTH_TOKEN:-}" ]] && [[ ! -f "${CREDS_FILE}" ]]; then
+    if [[ "$(uname)" == "Darwin" ]] && command -v security &>/dev/null; then
+      local creds="" base_service="Claude Code-credentials"
+      if creds=$(security find-generic-password -s "${base_service}" -w 2>/dev/null); then
+        mkdir -p "${SHARED_CLAUDE_DIR}"
+        echo "${creds}" > "${CREDS_FILE}"
+        chmod 600 "${CREDS_FILE}"
+        echo "Claude auth: synced from macOS Keychain"
+      else
+        local claude_home="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+        local hash_suffix
+        hash_suffix=$(echo -n "${claude_home}" | shasum -a 256 | head -c 8 || true)
+        if creds=$(security find-generic-password -s "${base_service}-${hash_suffix}" -w 2>/dev/null); then
+          mkdir -p "${SHARED_CLAUDE_DIR}"
+          echo "${creds}" > "${CREDS_FILE}"
+          chmod 600 "${CREDS_FILE}"
+          echo "Claude auth: synced from macOS Keychain"
+        fi
+      fi
+    fi
+    if [[ ! -f "${CREDS_FILE}" ]]; then
+      echo "WARNING: No Claude Code auth configured. Set ANTHROPIC_AUTH_TOKEN in .env or run 'ac sync-auth'."
+    fi
+  fi
+
+  # Create network if needed
+  if ! docker network inspect ac-network >/dev/null 2>&1; then
+    docker network create ac-network
+  fi
+
+  # Build docker run arguments
+  local docker_args=()
+  docker_args+=(--name "${NAME}" --hostname "${NAME}")
+  docker_args+=(--label "${AC_LABEL}=true" --label "ac_index=${INSTANCE}")
+  docker_args+=(--restart=unless-stopped --network ac-network)
+
+  # Resources from type.yaml
+  local memory cpus
+  memory=$(grep '  memory:' "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/.*: *//' || echo "4g")
+  cpus=$(grep '  cpus:' "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/.*: *//' || echo "2")
+  docker_args+=(--memory="${memory}" --cpus="${cpus}" --pids-limit=4096)
+
+  # Common env vars
+  docker_args+=(-e "CONTAINER_NAME=${NAME}")
+  docker_args+=(-e "GIT_NAME=${GIT_NAME:-Agent}")
+  docker_args+=(-e "GIT_EMAIL=${GIT_EMAIL:-agent@example.com}")
+  docker_args+=(-e "GITHUB_USERNAME=${GITHUB_USERNAME:-}")
+  docker_args+=(-e "GH_TOKEN=${GH_TOKEN:-}")
+  docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
+  docker_args+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}")
+  docker_args+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
+  docker_args+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}")
+
+  # Mount host SSH key if present
+  if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}" ]]; then
+    echo "Mounting host SSH key for git: ~/.ssh/${SSH_LOGIN_PRIV}"
+    docker_args+=(-v "${HOME}/.ssh/${SSH_LOGIN_PRIV}:/home/agent/.ssh/id_ed25519:ro")
+    if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}.pub" ]]; then
+      docker_args+=(-v "${HOME}/.ssh/${SSH_LOGIN_PRIV}.pub:/home/agent/.ssh/id_ed25519.pub:ro")
+    fi
+  fi
+
+  # Parse mounts from type.yaml
+  local AF_DATA_DIR="${AC_CONFIG_DIR}/agents/${NAME}"
+  local in_mounts=0 mount_name="" mount_type="" mount_container=""
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^mounts: ]]; then in_mounts=1; continue; fi
+    if [[ $in_mounts -eq 1 ]]; then
+      if [[ "$line" =~ ^[a-z] && ! "$line" =~ ^[[:space:]] ]]; then break; fi
+      if [[ "$line" =~ name:[[:space:]]*(.+) ]]; then mount_name="${BASH_REMATCH[1]}"; fi
+      if [[ "$line" =~ type:[[:space:]]*(.+) ]]; then mount_type="${BASH_REMATCH[1]}"; fi
+      if [[ "$line" =~ container:[[:space:]]*(.+) ]]; then
+        mount_container="${BASH_REMATCH[1]}"
+        case "$mount_type" in
+          volume) docker_args+=(-v "${NAME}-${mount_name}:${mount_container}") ;;
+          shared)
+            local shared_dir="${AC_CONFIG_DIR}/shared/${mount_name}"
+            mkdir -p "${shared_dir}"
+            docker_args+=(-v "${shared_dir}:${mount_container}")
+            ;;
+          *)
+            mkdir -p "${AF_DATA_DIR}/${mount_name}"
+            docker_args+=(-v "${AF_DATA_DIR}/${mount_name}:${mount_container}")
+            ;;
+        esac
+        mount_name="" mount_type="" mount_container=""
+      fi
+    fi
+  done < "${AC_DIR}/type.yaml"
+
+  # Parse ports from type.yaml
+  local in_ports=0 port_host_base="" port_info="" ssh_port=""
+  local calculated_ports=()
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^ports: ]]; then in_ports=1; continue; fi
+    if [[ $in_ports -eq 1 ]]; then
+      if [[ "$line" =~ ^[a-z] && ! "$line" =~ ^[[:space:]] ]]; then break; fi
+      if [[ "$line" =~ host_base:[[:space:]]*([0-9]+) ]]; then port_host_base="${BASH_REMATCH[1]}"; fi
+      if [[ "$line" =~ container:[[:space:]]*([0-9]+) ]]; then
+        local port_container="${BASH_REMATCH[1]}"
+        local host_port=$((port_host_base + INSTANCE))
+        calculated_ports+=("$host_port")
+        docker_args+=(-p "0.0.0.0:${host_port}:${port_container}")
+        port_info+="  Port ${host_port} -> ${port_container}\n"
+        if [[ "$port_container" == "22" ]]; then ssh_port="$host_port"; fi
+      fi
+    fi
+  done < "${AC_DIR}/type.yaml"
+
+  # Check for port conflicts
+  local conflicts=0
+  for port in "${calculated_ports[@]}"; do
+    if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "Port ${port} already in use"
+      conflicts=1
+    fi
+  done
+  if [[ "$conflicts" -eq 1 ]]; then
+    echo "Fix: choose a different index, or stop the conflicting service."
+    exit 1
+  fi
+
+  echo "Starting container..."
+  docker run -d "${docker_args[@]}" "$IMAGE_NAME"
+
+  # Wait for container
+  sleep 5
+  if ! docker ps --filter "name=${NAME}" --format "{{.Names}}" | grep -q "${NAME}"; then
+    echo "Container failed to start. Checking logs..."
+    docker logs "${NAME}"
+    exit 1
+  fi
+
+  # Install SSH login key
+  cat "${HOME}/.ssh/${SSH_LOGIN_PUB}" | docker exec -i "${NAME}" sh -c \
+    'mkdir -p /home/agent/.ssh && cat > /home/agent/.ssh/authorized_keys && chown agent:agent /home/agent/.ssh/authorized_keys && chmod 600 /home/agent/.ssh/authorized_keys'
+
+  # Wait for sshd
+  for i in {1..30}; do
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=1 -p "$ssh_port" agent@localhost exit 2>/dev/null; then
+      break
+    fi
+    sleep 2
+  done
+
+  # Setup SSH config
+  do_setup_ssh "$NAME" "$ssh_port"
+
+  echo ""
+  echo "Agent ${NAME} created (index ${INSTANCE})"
+  echo ""
+  echo "Ports:"
+  echo -e "$port_info"
+  echo ""
+  echo "Connect:"
+  echo "  ac shell ${NAME}         # interactive shell"
+  echo "  ac open ${NAME}          # VS Code"
+  echo "  ssh ${NAME}              # direct SSH"
+}
+
+do_delete() {
+  local NAME=$1
+  local AF_DATA_DIR="${AC_CONFIG_DIR}/agents/${NAME}"
+
+  echo "Deleting ${NAME}..."
+  read -p "Are you sure? (y/N) " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Cancelled"
+    return
+  fi
+
+  docker stop "$NAME" 2>/dev/null || true
+  docker rm "$NAME" 2>/dev/null || true
+  echo "Container deleted"
+
+  if [[ -d "$AF_DATA_DIR" ]]; then
+    echo "Persistent data at: $AF_DATA_DIR"
+    read -p "Also delete persistent data? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      rm -rf "$AF_DATA_DIR"
+      echo "Data deleted"
+    fi
+  fi
+
+  local volumes
+  volumes=$(docker volume ls -q --filter "name=${NAME}-" 2>/dev/null)
+  if [[ -n "$volumes" ]]; then
+    echo "Docker volumes found:"
+    echo "$volumes" | sed 's/^/  - /'
+    read -p "Also delete these volumes? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      echo "$volumes" | xargs docker volume rm 2>/dev/null || true
+      echo "Volumes deleted"
+    fi
+  fi
+}
+
+do_list() {
+  echo "=== Containers ==="
+  {
+    printf "NAMES\tIMAGE\tSTATUS\tPORTS\n"
+    docker ps -a --filter "label=${AC_LABEL}" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | sort
+  } | column -t -s $'\t'
+
+  echo ""
+  echo "=== Workspaces ==="
+  for container in $(docker ps -a --filter "label=${AC_LABEL}" --format "{{.Names}}" | sort); do
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null)
+    if [[ "$status" == "running" ]]; then
+      local repos
+      repos=$(docker exec "$container" ls -1 /home/agent/workspace 2>/dev/null | paste -sd, - | sed 's/,/, /g')
+      echo "  $container: ${repos:-(empty)}"
+    else
+      echo "  $container: (not running)"
+    fi
+  done
+}
+
+do_shell() {
+  local no_tmux=0
+  while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+      --no-tmux) no_tmux=1; shift ;;
+      *) echo "Unknown flag: $1"; exit 1 ;;
+    esac
+  done
+
+  local NAME="${1:-}"
+  local repo="${2:-}"
+  if [[ -z "$NAME" ]]; then
+    echo "Usage: ac shell [--no-tmux] <name> [repo]"
+    exit 1
+  fi
+
+  local env_args=()
+  if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]] || [[ -n "${ITERM_SESSION_ID:-}" ]]; then
+    env_args+=(-e ITERM_DETECTED=1)
+  fi
+  if [[ "$no_tmux" -eq 1 ]]; then
+    env_args+=(-e AC_NO_TMUX=1)
+  fi
+
+  local container_user
+  container_user=$(docker exec "$NAME" whoami 2>/dev/null)
+
+  if [[ "$container_user" == "agent" ]]; then
+    if [[ -z "$repo" ]]; then
+      docker exec ${env_args[@]+"${env_args[@]}"} -it "$NAME" zsh -l
+    else
+      docker exec ${env_args[@]+"${env_args[@]}"} -it "$NAME" zsh -lc "cd /home/agent/workspace/$repo && exec zsh -l"
+    fi
+  else
+    local su_cmd="su"
+    local whitelist=()
+    [[ "${TERM_PROGRAM:-}" == "iTerm.app" || -n "${ITERM_SESSION_ID:-}" ]] && whitelist+=(ITERM_DETECTED)
+    [[ "$no_tmux" -eq 1 ]] && whitelist+=(AC_NO_TMUX)
+    if [[ ${#whitelist[@]} -gt 0 ]]; then
+      su_cmd="su -w $(IFS=,; echo "${whitelist[*]}")"
+    fi
+    if [[ -z "$repo" ]]; then
+      docker exec ${env_args[@]+"${env_args[@]}"} -it "$NAME" $su_cmd - agent
+    else
+      docker exec ${env_args[@]+"${env_args[@]}"} -it "$NAME" $su_cmd - agent -c "cd /home/agent/workspace/$repo && exec \$SHELL -l"
+    fi
+  fi
+}
+
+do_setup_ssh() {
+  local NAME=$1
+  local SSH_PORT=$2
+
+  if [[ -z "$SSH_PORT" ]]; then
+    SSH_PORT=$(docker port "$NAME" 22 2>/dev/null | cut -d: -f2)
+  fi
+  if [[ -z "$SSH_PORT" ]]; then
+    echo "Could not determine SSH port"
+    return 1
+  fi
+
+  local SSH_KEY="~/.ssh/id_ed25519"
+  [[ ! -f ~/.ssh/id_ed25519 ]] && SSH_KEY="~/.ssh/id_rsa"
+
+  [ -f ~/.ssh/config ] && cp ~/.ssh/config ~/.ssh/config.bak
+
+  if grep -q "^Host $NAME$" ~/.ssh/config 2>/dev/null; then
+    local tmpfile
+    tmpfile=$(mktemp)
+    sed "/^Host $NAME$/,/^$/d" ~/.ssh/config > "$tmpfile" && mv "$tmpfile" ~/.ssh/config
+  fi
+
+  cat >> ~/.ssh/config << EOFF
+
+Host $NAME
+  HostName 127.0.0.1
+  Port $SSH_PORT
+  User agent
+  IdentityFile $SSH_KEY
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+EOFF
+}
+
+do_open() {
+  local NAME=$1
+  local repo="${2:-}"
+
+  if ! grep -q "^Host $NAME$" ~/.ssh/config 2>/dev/null; then
+    echo "SSH config not found for $NAME. Run: ac setup-ssh $NAME"
+    return 1
+  fi
+
+  local path="/home/agent/workspace"
+  [[ -n "$repo" ]] && path="/home/agent/workspace/$repo"
+
+  code --folder-uri "vscode-remote://ssh-remote+$NAME$path"
+}
+
+do_sync_auth() {
+  if [[ "$(uname)" != "Darwin" ]]; then
+    echo "sync-auth requires macOS (uses Keychain). Use ANTHROPIC_AUTH_TOKEN in .env instead."
+    exit 1
+  fi
+
+  local SHARED_CLAUDE_DIR="${AC_CONFIG_DIR}/shared/claude"
+  local CREDS_FILE="${SHARED_CLAUDE_DIR}/.credentials.json"
+  mkdir -p "${SHARED_CLAUDE_DIR}"
+
+  local creds="" base_service="Claude Code-credentials"
+  if creds=$(security find-generic-password -s "${base_service}" -w 2>/dev/null); then
+    :
+  else
+    local claude_home="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+    local hash_suffix
+    hash_suffix=$(echo -n "${claude_home}" | shasum -a 256 | head -c 8 || true)
+    if ! creds=$(security find-generic-password -s "${base_service}-${hash_suffix}" -w 2>/dev/null); then
+      echo "No Claude Code credentials found in macOS Keychain."
+      echo "Run 'claude auth login' first."
+      exit 1
+    fi
+  fi
+
+  echo "${creds}" > "${CREDS_FILE}"
+  chmod 600 "${CREDS_FILE}"
+  echo "Synced Claude Code credentials to ${CREDS_FILE}"
+}
+
+do_info() {
+  local NAME=$1
+  local SSH_PORT
+  SSH_PORT=$(docker port "$NAME" 22 2>/dev/null | cut -d: -f2)
+
+  echo "Agent: $NAME"
+  echo "SSH Port: $SSH_PORT"
+  echo "Data Dir: ${AC_CONFIG_DIR}/agents/${NAME}"
+  echo ""
+  echo "Repositories:"
+  docker exec "$NAME" ls -1 /home/agent/workspace 2>/dev/null | sed 's/^/  - /' || echo "  (none)"
+}
+
+do_run() {
+  local attach=0
+  if [[ "${1:-}" == "--foreground" || "${1:-}" == "-f" ]]; then
+    attach=1; shift
+  fi
+  local NAME="${1:-}" repo="${2:-}"
+  shift 2 2>/dev/null || true
+  local task="$*"
+
+  if [[ -z "$NAME" || -z "$repo" || -z "$task" ]]; then
+    echo "Usage: ac run [-f] <name> <repo> <task>"
+    exit 1
+  fi
+
+  echo "Running Claude in $NAME/$repo: $task"
+  if [[ "$attach" -eq 1 ]]; then
+    docker exec -u agent "$NAME" bash -lc "cd /home/agent/workspace/$repo && claude --dangerously-skip-permissions --print \"$task\""
+  else
+    docker exec -u agent "$NAME" bash -lc "cd /home/agent/workspace/$repo && nohup claude --dangerously-skip-permissions --print \"$task\" > /tmp/claude-run.log 2>&1 &"
+    echo "Detached. View: docker exec $NAME tail -f /tmp/claude-run.log"
+  fi
+}
+
+show_help() {
+  cat <<'EOF'
+Agentic Containers (ac) - TypeScript dev container manager
+
+Usage: ac <command> [arguments]
+
+Commands:
+  build [docker-args]            Build the container image
+  create <name> [index]          Create a new container
+  delete <name>                  Delete a container
+  list                           List all containers
+  start <name>                   Start a stopped container
+  stop <name>                    Stop a container
+  shell [--no-tmux] <name> [repo]  Open interactive shell
+  open <name> [repo]             Open in VS Code via SSH
+  setup-ssh <name> [port]        Setup SSH config
+  sync-auth                      Sync Claude auth from macOS Keychain
+  clone <name> <repo-urls...>    Clone repos into container
+  run [-f] <name> <repo> <task>  Run Claude in a repo
+  logs <name>                    View container logs
+  info <name>                    Show container info
+
+Examples:
+  ac build                       # Build the image
+  ac create t1                   # Create container (index auto-assigned)
+  ac shell t1                    # Shell into container
+  ac open t1 my-project          # Open in VS Code
+EOF
+}
+
+# ============================================================================
+# Main dispatch
+# ============================================================================
+
+case "${1:-}" in
+  help|-h|--help) show_help ;;
+  build)     shift; do_build "$@" ;;
+  create)    do_create "${2:-}" "${3:-}" ;;
+  delete)    [[ -z "${2:-}" ]] && { echo "Usage: ac delete <name>"; exit 1; }; do_delete "$2" ;;
+  list)      do_list ;;
+  start)     [[ -z "${2:-}" ]] && { echo "Usage: ac start <name>"; exit 1; }; docker start "$2" ;;
+  stop)      [[ -z "${2:-}" ]] && { echo "Usage: ac stop <name>"; exit 1; }; docker stop "$2" ;;
+  shell)     shift; do_shell "$@" ;;
+  open)      [[ -z "${2:-}" ]] && { echo "Usage: ac open <name> [repo]"; exit 1; }; do_open "$2" "${3:-}" ;;
+  setup-ssh) [[ -z "${2:-}" ]] && { echo "Usage: ac setup-ssh <name> [port]"; exit 1; }; do_setup_ssh "$2" "${3:-}" ;;
+  sync-auth) do_sync_auth ;;
+  info)      [[ -z "${2:-}" ]] && { echo "Usage: ac info <name>"; exit 1; }; do_info "$2" ;;
+  logs)      [[ -z "${2:-}" ]] && { echo "Usage: ac logs <name>"; exit 1; }; docker logs -f "$2" ;;
+  run)       shift; do_run "$@" ;;
+  clone)
+    [[ -z "${2:-}" || -z "${3:-}" ]] && { echo "Usage: ac clone <name> <repo-urls...>"; exit 1; }
+    NAME="$2"; shift 2
+    for repo in "$@"; do
+      repo_name=$(basename "$repo" .git)
+      echo "Cloning $repo_name..."
+      docker exec -u agent "$NAME" bash -lc "cd /home/agent/workspace && [ ! -d '$repo_name' ] && git clone $repo || echo '$repo_name already exists'"
+    done
+    ;;
+  *)         show_help; exit 1 ;;
+esac
