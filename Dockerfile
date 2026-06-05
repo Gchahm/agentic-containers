@@ -137,10 +137,10 @@ USER root
 # Copy root scripts
 COPY --chmod=0755 scripts/root/. /usr/local/bin/
 
-USER agent
 WORKDIR /home/agent/workspace
 
 EXPOSE 22 3000 5432
 
+USER root
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/startup"]
