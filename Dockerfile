@@ -134,6 +134,20 @@ RUN . "$NVM_DIR/nvm.sh" && nvm use 22 && \
     cp -r /home/agent/.claude/skills /opt/ac/claude/skills
 USER root
 
+# Install Claude Code Damage Control hooks from git
+USER agent
+RUN git clone --depth 1 https://github.com/Gchahm/claude-code-damage-control.git /tmp/damage-control && \
+    mkdir -p /home/agent/.claude/hooks/damage-control /opt/ac/claude/hooks/damage-control && \
+    cp /tmp/damage-control/.claude/skills/damage-control/hooks/damage-control-python/bash-tool-damage-control.py \
+       /tmp/damage-control/.claude/skills/damage-control/hooks/damage-control-python/edit-tool-damage-control.py \
+       /tmp/damage-control/.claude/skills/damage-control/hooks/damage-control-python/write-tool-damage-control.py \
+       /home/agent/.claude/hooks/damage-control/ && \
+    cp /tmp/damage-control/.claude/skills/damage-control/patterns.yaml \
+       /home/agent/.claude/hooks/damage-control/ && \
+    cp -r /home/agent/.claude/hooks/damage-control/. /opt/ac/claude/hooks/damage-control/ && \
+    rm -rf /tmp/damage-control
+USER root
+
 # Copy root scripts
 COPY --chmod=0755 scripts/root/. /usr/local/bin/
 

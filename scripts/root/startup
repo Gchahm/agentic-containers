@@ -22,6 +22,7 @@ fi
 cp /opt/ac/claude/settings.json "$AGENT_HOME/.claude/settings.json" 2>/dev/null && chown agent:agent "$AGENT_HOME/.claude/settings.json" || true
 cp /opt/ac/claude/CLAUDE.md "$AGENT_HOME/.claude/CLAUDE.md" 2>/dev/null && chown agent:agent "$AGENT_HOME/.claude/CLAUDE.md" || true
 cp -r /opt/ac/claude/skills "$AGENT_HOME/.claude/" 2>/dev/null && chown -R agent:agent "$AGENT_HOME/.claude/skills" || true
+cp -r /opt/ac/claude/hooks "$AGENT_HOME/.claude/" 2>/dev/null && chown -R agent:agent "$AGENT_HOME/.claude/hooks" || true
 
 # Persist runtime env vars for login shells
 echo "[startup] Writing /etc/environment..."
