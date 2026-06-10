@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Container startup script (runs as agent user)
+
+# Source nvm so node/npm are available during startup
+export NVM_DIR="/home/agent/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+umask 077
+
+echo "[startup] Configuring agent..."
+
+# Fix ownership of Docker named volumes (created as root on first mount)
+for dir in ~/.npm-global ~/.pnpm-store; do
+    if [[ -d "$dir" ]] && [[ "$(stat -c '%U' "$dir" 2>/dev/null)" != "agent" ]]; then
+        echo "[startup] Fixing ownership: $dir"
+        sudo chown -R agent:agent "$dir"
+    fi
+done
+
+# Copy staged Claude configs if not present (bind mount hides files placed during build)
+if [[ ! -f ~/.claude/settings.json ]]; then
+    echo "[startup] Initializing Claude configs from staged files..."
+    cp -r /opt/ac/claude/. ~/.claude/
+fi
+
+# Sync settings, CLAUDE.md, and skills from image (always overwrite to pick up updates)
+cp /opt/ac/claude/settings.json ~/.claude/settings.json 2>/dev/null || true
+cp /opt/ac/claude/CLAUDE.md ~/.claude/CLAUDE.md 2>/dev/null || true
+cp -r /opt/ac/claude/skills ~/.claude/ 2>/dev/null || true
+cp -r /opt/ac/claude/hooks ~/.claude/ 2>/dev/null || true
+
+# Persist runtime env vars for SSH login shells
+# (/etc/environment is made writable by agent in Dockerfile)
+echo "[startup] Writing /etc/environment..."
+for var in CONTAINER_NAME GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL PLAYWRIGHT_BROWSERS_PATH PLAYWRIGHT_MCP_SANDBOX PLAYWRIGHT_MCP_OUTPUT_DIR; do
+    val="${!var:-}"
+    if [[ -n "$val" ]]; then
+        grep -q "^${var}=" /etc/environment 2>/dev/null && \
+            sed -i "s|^${var}=.*|${var}=${val}|" /etc/environment || \
+            echo "${var}=${val}" >> /etc/environment
+    fi
+done
+
+# Normalize token env
+export GH_TOKEN="${GH_TOKEN:-${GITHUB_OAUTH_TOKEN:-}}"
+
+# Substitute identity placeholders in templates
+if [[ -n "${GITHUB_USERNAME:-}" ]]; then
+    sed -i "s|{GITHUB_USERNAME}|${GITHUB_USERNAME}|g" ~/.config/gh/hosts.yml
+    chmod 600 ~/.config/gh/hosts.yml
+fi
+if [[ -n "${GIT_NAME:-}" ]] && [[ -n "${GIT_EMAIL:-}" ]]; then
+    sed -i "s|{GIT_NAME}|${GIT_NAME}|g; s|{GIT_EMAIL}|${GIT_EMAIL}|g" ~/.gitconfig
+    chmod 600 ~/.gitconfig
+fi
+
+# Configure git auth mode
+if [[ -r ~/.ssh/id_ed25519 ]]; then
+    echo "[startup] SSH key detected -- using SSH for git operations"
+    chmod 600 ~/.ssh/id_ed25519 2>/dev/null || true
+    git config --global url."git@github.com:".insteadOf "https://github.com/"
+    git config --global --unset-all credential.helper 2>/dev/null || true
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        sed -i 's|git_protocol: https|git_protocol: ssh|' ~/.config/gh/hosts.yml
+    fi
+elif [[ -n "${GH_TOKEN:-}" ]]; then
+    echo "[startup] No SSH key -- using HTTPS + token for git operations"
+    git config --global credential.helper \
+      "!f() { echo \"username=${GH_TOKEN}\"; echo \"password=x-oauth-basic\"; }; f"
+else
+    echo "[startup] WARNING: no SSH key and no GH_TOKEN -- git/gh auth will fail"
+fi
+
+# Install Claude Code CLI if not present
+if command -v claude >/dev/null 2>&1; then
+    echo "[startup] Claude Code CLI already installed"
+else
+    echo "[startup] Installing Claude Code CLI..."
+    curl -fsSL https://claude.ai/install.sh | bash 2>&1 || echo "[startup] WARNING: Claude Code install failed" >&2
+fi
+
+# Configure pnpm store
+echo "[startup] Configuring pnpm..."
+export PATH="/home/agent/.local/share/pnpm:$PATH"
+pnpm config set store-dir /home/agent/.pnpm-store --global 2>&1 || echo "[startup] WARNING: pnpm config failed" >&2
+
+# Ensure correct SSH permissions
+chmod 700 ~/.ssh 2>/dev/null || true
+
+# Clear startup-only secrets from memory
+unset GITHUB_USERNAME GIT_NAME GIT_EMAIL GITHUB_OAUTH_TOKEN
+
+# --------------------------------------------------------------------
+# PostgreSQL setup
+# --------------------------------------------------------------------
+echo "[startup] Starting PostgreSQL..."
+sudo chown -R postgres:postgres /var/lib/postgresql/18/main
+sudo /usr/bin/pg_ctlcluster 18 main start
+
+echo "[startup] Waiting for PostgreSQL to be ready..."
+timeout 30 bash -c 'until sudo pg_isready -h localhost >/dev/null 2>&1; do sleep 1; done'
+
+sudo psql -U postgres -c "ALTER USER postgres PASSWORD 'postgres';" 2>/dev/null || true
+echo "[startup] PostgreSQL is ready"
+
+# --------------------------------------------------------------------
+# Start SSH server
+# --------------------------------------------------------------------
+echo "[startup] Starting sshd..."
+exec sudo /usr/sbin/sshd -D -e

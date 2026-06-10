@@ -22,8 +22,10 @@ configs/home/              Files copied into /home/agent/ at build time
   .claude/statusline.sh    Status bar script for Claude Code
   .claude/hooks/           Claude Code event hooks (start, stop, notification, etc.)
   .tmux.conf               Tmux configuration
-scripts/root/startup       Container entrypoint (runs as root, sets up postgres, ssh, auth, then exec sshd)
-scripts/home/              User commands available inside container (help, yolo)
+scripts/home/              Scripts available inside container
+  startup                  Container entrypoint (runs as agent, sets up postgres, ssh, auth, then exec sshd)
+  help                     Help command
+  yolo                     Launch Claude Code with --dangerously-skip-permissions
 ```
 
 ## Container Stack
@@ -63,7 +65,7 @@ Host port = host_base + container index. Default bases:
 
 - **Add system packages** — edit the `apt-get install` block in Dockerfile
 - **Change Node version** — edit the nvm install lines in Dockerfile
-- **Add services** — edit `scripts/root/startup` (start before sshd exec)
+- **Add services** — edit `scripts/home/startup` (start before sshd exec)
 - **Add ports** — add entries to `ports:` in type.yaml
 - **Add persistent storage** — add entries to `mounts:` in type.yaml
 - **Change container resources** — edit `resources:` in type.yaml

@@ -52,7 +52,10 @@ RUN set -eux; \
       postgresql-18 postgresql-client-18 \
       gh; \
     rm -rf /var/lib/apt/lists/*; \
-    mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql
+    mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql; \
+    # Configure PostgreSQL for network access at build time
+    echo "listen_addresses = '*'" >> /etc/postgresql/18/main/postgresql.conf; \
+    echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/18/main/pg_hba.conf
 
 # Create agent user with targeted sudo permissions
 RUN useradd -m -s /bin/zsh -u 1000 agent && \
@@ -132,10 +135,7 @@ USER agent
 RUN . "$NVM_DIR/nvm.sh" && nvm use 22 && \
     playwright-cli install --skills && \
     cp -r /home/agent/.claude/skills /opt/ac/claude/skills
-USER root
-
 # Install Claude Code Damage Control hooks from git
-USER agent
 RUN git clone --depth 1 https://github.com/Gchahm/claude-code-damage-control.git /tmp/damage-control && \
     mkdir -p /home/agent/.claude/hooks/damage-control /opt/ac/claude/hooks/damage-control && \
     cp /tmp/damage-control/.claude/skills/damage-control/hooks/damage-control-python/bash-tool-damage-control.py \
@@ -146,15 +146,9 @@ RUN git clone --depth 1 https://github.com/Gchahm/claude-code-damage-control.git
        /home/agent/.claude/hooks/damage-control/ && \
     cp -r /home/agent/.claude/hooks/damage-control/. /opt/ac/claude/hooks/damage-control/ && \
     rm -rf /tmp/damage-control
-USER root
-
-# Copy root scripts
-COPY --chmod=0755 scripts/root/. /usr/local/bin/
 
 WORKDIR /home/agent/workspace
 
 EXPOSE 22 3000 5432
-
-USER root
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/startup"]

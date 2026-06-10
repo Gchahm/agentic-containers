@@ -150,13 +150,11 @@ do_create() {
   docker_args+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
   docker_args+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}")
 
-  # Mount host SSH key if present
+  # Track SSH key to copy after container start (bind mount causes ownership issues)
+  local SSH_KEY_COPY=""
   if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}" ]]; then
-    echo "Mounting host SSH key for git: ~/.ssh/${SSH_LOGIN_PRIV}"
-    docker_args+=(-v "${HOME}/.ssh/${SSH_LOGIN_PRIV}:/home/agent/.ssh/id_ed25519:ro")
-    if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}.pub" ]]; then
-      docker_args+=(-v "${HOME}/.ssh/${SSH_LOGIN_PRIV}.pub:/home/agent/.ssh/id_ed25519.pub:ro")
-    fi
+    echo "Will copy host SSH key for git: ~/.ssh/${SSH_LOGIN_PRIV}"
+    SSH_KEY_COPY="${HOME}/.ssh/${SSH_LOGIN_PRIV}"
   fi
 
   # Parse mounts from type.yaml
@@ -231,8 +229,18 @@ do_create() {
   fi
 
   # Install SSH login key
-  cat "${HOME}/.ssh/${SSH_LOGIN_PUB}" | docker exec -i "${NAME}" sh -c \
-    'mkdir -p /home/agent/.ssh && cat > /home/agent/.ssh/authorized_keys && chown agent:agent /home/agent/.ssh/authorized_keys && chmod 600 /home/agent/.ssh/authorized_keys'
+  cat "${HOME}/.ssh/${SSH_LOGIN_PUB}" | docker exec -u agent -i "${NAME}" sh -c \
+    'mkdir -p ~/.ssh && cat > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+
+  # Copy SSH key for git operations (avoids bind mount ownership issues)
+  if [[ -n "$SSH_KEY_COPY" ]]; then
+    cat "$SSH_KEY_COPY" | docker exec -u agent -i "${NAME}" sh -c \
+      'cat > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519'
+    if [[ -r "${SSH_KEY_COPY}.pub" ]]; then
+      cat "${SSH_KEY_COPY}.pub" | docker exec -u agent -i "${NAME}" sh -c \
+        'cat > ~/.ssh/id_ed25519.pub && chmod 600 ~/.ssh/id_ed25519.pub'
+    fi
+  fi
 
   # Wait for sshd
   for i in {1..30}; do
