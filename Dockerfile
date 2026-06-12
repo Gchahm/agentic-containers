@@ -80,21 +80,6 @@ RUN mkdir -p /opt/ac && chown agent:agent /opt/ac
 USER agent
 WORKDIR /home/agent
 
-# Copy all home configs
-COPY --chown=agent:agent configs/home/. /home/agent/
-
-# Fix SSH permissions
-RUN chmod 700 /home/agent/.ssh && chmod 600 /home/agent/.ssh/config
-
-# Stage Claude configs (copied at startup due to bind mount)
-COPY --chown=agent:agent configs/home/.claude /opt/ac/claude
-
-# Copy .extras if it exists
-COPY --chown=agent:agent .extra[s] /home/agent/
-
-# Copy user scripts
-COPY --chown=agent:agent scripts/home/. /usr/local/bin/
-
 # Install nvm with Node 22 (LTS default) and Node 24
 ENV NVM_DIR="/home/agent/.nvm"
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && \
@@ -130,11 +115,16 @@ RUN . "/home/agent/.nvm/nvm.sh" && nvm use 22 && \
     mkdir -p /opt/google/chrome && \
     ln -s "$(find /opt/playwright -name chrome -path '*/chromium-*/chrome' -type f | head -1)" /opt/google/chrome/chrome
 
-# Install Playwright CLI skills and stage them
+# --- Everything below here changes frequently and rebuilds fast ---
+
 USER agent
+
+# Install Playwright CLI skills and stage them
 RUN . "$NVM_DIR/nvm.sh" && nvm use 22 && \
     playwright-cli install --skills && \
-    cp -r /home/agent/.claude/skills /opt/ac/claude/skills
+    mkdir -p /opt/ac/claude/skills && \
+    cp -r /home/agent/.claude/skills/. /opt/ac/claude/skills/
+
 # Install Claude Code Damage Control hooks from git
 RUN git clone --depth 1 https://github.com/Gchahm/claude-code-damage-control.git /tmp/damage-control && \
     mkdir -p /home/agent/.claude/hooks/damage-control /opt/ac/claude/hooks/damage-control && \
@@ -146,6 +136,19 @@ RUN git clone --depth 1 https://github.com/Gchahm/claude-code-damage-control.git
        /home/agent/.claude/hooks/damage-control/ && \
     cp -r /home/agent/.claude/hooks/damage-control/. /opt/ac/claude/hooks/damage-control/ && \
     rm -rf /tmp/damage-control
+
+# Copy all home configs (shell, git, ssh, gh, claude, tmux)
+COPY --chown=agent:agent configs/home/. /home/agent/
+RUN chmod 700 /home/agent/.ssh && chmod 600 /home/agent/.ssh/config
+
+# Stage Claude configs (copied at startup due to bind mount)
+COPY --chown=agent:agent configs/home/.claude /opt/ac/claude
+
+# Copy .extras if it exists
+COPY --chown=agent:agent .extra[s] /home/agent/
+
+# Copy user scripts (startup, help, yolo)
+COPY --chown=agent:agent scripts/home/. /usr/local/bin/
 
 WORKDIR /home/agent/workspace
 
