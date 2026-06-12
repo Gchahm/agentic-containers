@@ -413,6 +413,7 @@ Host $NAME
   Port $SSH_PORT
   User agent
   IdentityFile $SSH_KEY
+  ForwardAgent yes
   StrictHostKeyChecking no
   UserKnownHostsFile /dev/null
 EOFF
@@ -553,7 +554,7 @@ case "${1:-}" in
     for repo in "$@"; do
       repo_name=$(basename "$repo" .git)
       echo "Cloning $repo_name..."
-      docker exec -u agent "$NAME" bash -lc "cd /home/agent/workspace && [ ! -d '$repo_name' ] && git clone $repo || echo '$repo_name already exists'"
+      ssh "$NAME" "cd ~/workspace && [ ! -d '$repo_name' ] && git clone $repo || echo '$repo_name already exists'"
     done
     ;;
   *)         show_help; exit 1 ;;
