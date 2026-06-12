@@ -139,8 +139,15 @@ do_create() {
   cpus=$(grep '  cpus:' "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/.*: *//' || echo "2")
   docker_args+=(--memory="${memory}" --cpus="${cpus}" --pids-limit=4096)
 
+  # Detect host timezone
+  local host_tz="${TZ:-}"
+  if [[ -z "$host_tz" && -L /etc/localtime ]]; then
+    host_tz=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
+  fi
+
   # Common env vars
   docker_args+=(-e "CONTAINER_NAME=${NAME}")
+  docker_args+=(-e "TZ=${host_tz:-UTC}")
   docker_args+=(-e "GIT_NAME=${GIT_NAME:-Agent}")
   docker_args+=(-e "GIT_EMAIL=${GIT_EMAIL:-agent@example.com}")
   docker_args+=(-e "GITHUB_USERNAME=${GITHUB_USERNAME:-}")
