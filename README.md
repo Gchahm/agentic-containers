@@ -169,6 +169,47 @@ ac sync-auth                 # Sync Claude Code credentials from macOS Keychain
 | Container resources | `resources:` in `type.yaml` |
 | Shell config | `configs/home/.zshrc` and `.zshenv` |
 | Claude settings | `configs/home/.claude/settings.json` and `configs/home/.claude/CLAUDE.md` |
+| Personal shell additions | `.extras` (see below) |
+
+### Personal shell additions with `.extras`
+
+Create a `.extras` file in the repo root for shell customizations you don't want to commit (it's gitignored). It's copied into the container at build time and sourced by `.zshrc` on every interactive shell.
+
+```bash
+touch .extras
+```
+
+Example contents:
+
+```bash
+# Custom env vars
+export EDITOR=nvim
+export MY_API_KEY="..."
+
+# Custom aliases
+alias dev="pnpm dev --hostname 0.0.0.0"
+alias migrate="pnpm db:migrate"
+
+# Disable tmux auto-attach
+# export AC_NO_TMUX=1
+```
+
+After editing `.extras`, rebuild the image and recreate containers to pick up the changes:
+
+```bash
+ac build
+ac upgrade-all
+```
+
+### Upgrading containers
+
+After modifying the `Dockerfile`, `type.yaml`, or `.extras`, run:
+
+```bash
+ac upgrade-all
+```
+
+This rebuilds the image (optional `--no-cache`) and recreates every container in place, preserving volumes, the workspace bind mount, and each container's running/stopped state.
 
 ## Notes
 

@@ -157,11 +157,13 @@ do_create() {
   docker_args+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
   docker_args+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}")
 
-  # Track SSH key to copy after container start (bind mount causes ownership issues)
-  local SSH_KEY_COPY=""
+  # Mount host SSH private key into container for git/gh (read-only)
   if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}" ]]; then
-    echo "Will copy host SSH key for git: ~/.ssh/${SSH_LOGIN_PRIV}"
-    SSH_KEY_COPY="${HOME}/.ssh/${SSH_LOGIN_PRIV}"
+    echo "Mounting host SSH key for git: ~/.ssh/${SSH_LOGIN_PRIV}"
+    docker_args+=(-v "${HOME}/.ssh/${SSH_LOGIN_PRIV}:/home/agent/.ssh/id_ed25519:ro")
+    if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}.pub" ]]; then
+      docker_args+=(-v "${HOME}/.ssh/${SSH_LOGIN_PRIV}.pub:/home/agent/.ssh/id_ed25519.pub:ro")
+    fi
   fi
 
   # Parse mounts from type.yaml
@@ -238,16 +240,6 @@ do_create() {
   # Install SSH login key
   cat "${HOME}/.ssh/${SSH_LOGIN_PUB}" | docker exec -u agent -i "${NAME}" sh -c \
     'mkdir -p ~/.ssh && cat > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
-
-  # Copy SSH key for git operations (avoids bind mount ownership issues)
-  if [[ -n "$SSH_KEY_COPY" ]]; then
-    cat "$SSH_KEY_COPY" | docker exec -u agent -i "${NAME}" sh -c \
-      'cat > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519'
-    if [[ -r "${SSH_KEY_COPY}.pub" ]]; then
-      cat "${SSH_KEY_COPY}.pub" | docker exec -u agent -i "${NAME}" sh -c \
-        'cat > ~/.ssh/id_ed25519.pub && chmod 600 ~/.ssh/id_ed25519.pub'
-    fi
-  fi
 
   # Wait for sshd
   for i in {1..30}; do
@@ -499,6 +491,159 @@ do_run() {
   fi
 }
 
+do_upgrade_all() {
+  local containers
+  containers=$(docker ps -a --filter "label=${AC_LABEL}" --format "{{.Names}}")
+
+  if [[ -z "$containers" ]]; then
+    echo "No ac containers found."
+    return 0
+  fi
+
+  local container_count
+  container_count=$(echo "$containers" | wc -l | tr -d ' ')
+
+  # Parse SSH host_base for index recovery from port
+  local ssh_base
+  ssh_base=$(awk '/^ports:/,/^[a-z]/{ if (/name: ssh/) found=1; if (found && /host_base:/) { print $2; exit } }' "${AC_DIR}/type.yaml")
+  ssh_base="${ssh_base:-2600}"
+
+  echo ""
+  echo "================================================================"
+  echo "                    AC CONTAINER UPGRADE                        "
+  echo "================================================================"
+  echo "  This will upgrade all ac containers to the latest image."
+  echo ""
+  echo "  + Volumes and persistent data will be PRESERVED"
+  echo "  ! Running processes in containers will be KILLED"
+  echo "  Containers: $container_count"
+  echo "================================================================"
+  echo ""
+
+  read -p "Continue? [y/N]: " confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    return 0
+  fi
+
+  echo ""
+  read -p "Rebuild ${IMAGE_NAME} image (--no-cache)? (Recommended) [Y/n]: " reply
+  if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+    echo "Building ${IMAGE_NAME} image..."
+    if ! do_build --no-cache; then
+      echo "Error building image. Aborting."
+      exit 1
+    fi
+  else
+    echo "Skipping image rebuild."
+  fi
+
+  # Pre-scan: collect metadata
+  local scan_names=() scan_indices=() scan_running=()
+  for name in $containers; do
+    local index
+    index=$(docker inspect --format '{{index .Config.Labels "ac_index"}}' "$name" 2>/dev/null || true)
+    if [[ -z "$index" || "$index" == "<no value>" ]]; then
+      local ssh_port
+      ssh_port=$(docker port "$name" 22 2>/dev/null | head -1 | cut -d: -f2 || true)
+      if [[ -n "$ssh_port" ]]; then
+        index=$((ssh_port - ssh_base))
+      else
+        index=""
+      fi
+    fi
+
+    local running=false
+    if docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; then
+      running=true
+    fi
+
+    scan_names+=("$name")
+    scan_indices+=("$index")
+    scan_running+=("$running")
+  done
+
+  # Resolve index conflicts (first-come keeps, conflicts get reassigned)
+  local used_indices=""
+  for i in "${!scan_names[@]}"; do
+    local index="${scan_indices[$i]}"
+    local name="${scan_names[$i]}"
+    local conflict_owner=""
+    if [[ -n "$index" ]]; then
+      conflict_owner=$(echo "$used_indices" | tr ' ' '\n' | grep "^${index}:" | head -1 | cut -d: -f2- || true)
+    fi
+
+    if [[ -n "$index" && -z "$conflict_owner" ]]; then
+      used_indices="$used_indices ${index}:${name}"
+    else
+      local new_index=1
+      while echo "$used_indices" | tr ' ' '\n' | grep -q "^${new_index}:"; do
+        new_index=$((new_index + 1))
+      done
+      if [[ -n "$index" ]]; then
+        echo "  Index conflict: '$name' had index $index (same as '$conflict_owner') -> reassigned to $new_index"
+      else
+        echo "  No index found for '$name' -> assigned index $new_index"
+      fi
+      scan_indices[$i]="$new_index"
+      used_indices="$used_indices ${new_index}:${name}"
+    fi
+  done
+
+  echo ""
+
+  local current=0 success=0 failed=0
+  local self="${BASH_SOURCE[0]}"
+  for i in "${!scan_names[@]}"; do
+    local name="${scan_names[$i]}"
+    local index="${scan_indices[$i]}"
+    local was_running="${scan_running[$i]}"
+    current=$((current + 1))
+
+    echo "[$current/$container_count] Upgrading '$name' (index $index)..."
+
+    echo -n "      Stopping container... "
+    if [[ "$was_running" == "true" ]]; then
+      docker stop "$name" > /dev/null 2>&1 && echo "Done" || { echo "Failed"; failed=$((failed + 1)); echo; continue; }
+    else
+      echo "Already stopped"
+    fi
+
+    echo -n "      Removing container... "
+    if docker rm "$name" > /dev/null 2>&1; then
+      echo "Done"
+    else
+      echo "Failed"
+      failed=$((failed + 1)); echo; continue
+    fi
+
+    echo -n "      Creating container... "
+    if "$self" create "$name" "$index" > /dev/null 2>&1; then
+      echo "Done"
+    else
+      echo "Failed"
+      failed=$((failed + 1)); echo; continue
+    fi
+
+    if [[ "$was_running" != "true" ]]; then
+      echo -n "      Restoring stopped state... "
+      docker stop "$name" > /dev/null 2>&1
+      echo "Done"
+    fi
+
+    success=$((success + 1))
+    echo ""
+  done
+
+  echo "================================================================"
+  if [[ $failed -eq 0 ]]; then
+    echo " Complete! Upgraded $success/$container_count containers."
+  else
+    echo " Complete with errors. Upgraded $success/$container_count containers ($failed failed)."
+  fi
+  echo "================================================================"
+}
+
 show_help() {
   cat <<'EOF'
 Agentic Containers (ac) - TypeScript dev container manager
@@ -509,6 +654,7 @@ Commands:
   build [docker-args]            Build the container image
   create <name> [index]          Create a new container
   delete <name>                  Delete a container
+  upgrade-all                    Rebuild image and recreate all containers
   list                           List all containers
   start <name>                   Start a stopped container
   stop <name>                    Stop a container
@@ -538,6 +684,7 @@ case "${1:-}" in
   build)     shift; do_build "$@" ;;
   create)    do_create "${2:-}" "${3:-}" ;;
   delete)    [[ -z "${2:-}" ]] && { echo "Usage: ac delete <name>"; exit 1; }; do_delete "$2" ;;
+  upgrade-all) do_upgrade_all ;;
   list)      do_list ;;
   start)     [[ -z "${2:-}" ]] && { echo "Usage: ac start <name>"; exit 1; }; docker start "$2" ;;
   stop)      [[ -z "${2:-}" ]] && { echo "Usage: ac stop <name>"; exit 1; }; docker stop "$2" ;;
