@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -y \
     sudo \
     tini \
     vim \
-    neovim \
     tmux \
     unzip \
     wget \
@@ -56,6 +55,20 @@ RUN set -eux; \
     # Configure PostgreSQL for network access at build time
     echo "listen_addresses = '*'" >> /etc/postgresql/18/main/postgresql.conf; \
     echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/18/main/pg_hba.conf
+
+# Install latest Neovim from upstream (apt version lags behind)
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) nvim_arch="x86_64" ;; \
+      arm64) nvim_arch="arm64" ;; \
+      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-${nvim_arch}.tar.gz" \
+      -o /tmp/nvim.tar.gz; \
+    tar -xzf /tmp/nvim.tar.gz -C /opt; \
+    ln -s "/opt/nvim-linux-${nvim_arch}/bin/nvim" /usr/local/bin/nvim; \
+    rm /tmp/nvim.tar.gz
 
 # Create agent user with targeted sudo permissions
 RUN useradd -m -s /bin/zsh -u 1000 agent && \
