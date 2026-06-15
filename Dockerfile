@@ -70,6 +70,14 @@ RUN set -eux; \
     ln -s "/opt/nvim-linux-${nvim_arch}/bin/nvim" /usr/local/bin/nvim; \
     rm /tmp/nvim.tar.gz
 
+# Install cloudflared (for Cloudflare Tunnel webhook ingress)
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}.deb" \
+      -o /tmp/cloudflared.deb; \
+    dpkg -i /tmp/cloudflared.deb; \
+    rm /tmp/cloudflared.deb
+
 # Create agent user with targeted sudo permissions
 RUN useradd -m -s /bin/zsh -u 1000 agent && \
     echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sshd, /usr/bin/pg_ctlcluster, /usr/bin/pg_isready, /usr/bin/psql, /usr/bin/chown" \

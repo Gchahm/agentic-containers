@@ -491,6 +491,176 @@ do_run() {
   fi
 }
 
+load_env_or_die() {
+  if [[ -f "${AC_DIR}/.env" ]]; then
+    set -a
+    source "${AC_DIR}/.env"
+    set +a
+  else
+    echo "No .env file found. Copy .env.example to .env and fill in values."
+    exit 1
+  fi
+}
+
+require_cf_env() {
+  local missing=()
+  for var in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID CLOUDFLARE_BASE_DOMAIN; do
+    [[ -z "${!var:-}" ]] && missing+=("$var")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Missing Cloudflare env vars in .env:"
+    for v in "${missing[@]}"; do echo "  - $v"; done
+    exit 1
+  fi
+}
+
+cf_api() {
+  local method=$1 url=$2 body="${3:-}"
+  local args=(-fsSL -X "$method" "https://api.cloudflare.com/client/v4${url}"
+    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+    -H "Content-Type: application/json")
+  [[ -n "$body" ]] && args+=(-d "$body")
+  curl "${args[@]}"
+}
+
+do_tunnel_create() {
+  local NAME="${1:-}"
+  local PORT="${2:-8001}"
+  if [[ -z "$NAME" ]]; then
+    echo "Usage: ac tunnel create <name> [container-port]"
+    exit 1
+  fi
+
+  load_env_or_die
+  require_cf_env
+
+  local tunnel_dir="${AC_CONFIG_DIR}/agents/${NAME}/cloudflared"
+  if [[ -f "${tunnel_dir}/tunnel.json" ]]; then
+    echo "Tunnel already exists for ${NAME}. Delete it first with: ac tunnel delete ${NAME}"
+    exit 1
+  fi
+  mkdir -p "$tunnel_dir"
+
+  local hostname="${NAME}-agent-container.${CLOUDFLARE_BASE_DOMAIN}"
+
+  echo "Creating tunnel ac-${NAME}..."
+  local resp tunnel_id token
+  resp=$(cf_api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel" \
+    "{\"name\":\"ac-${NAME}\",\"config_src\":\"cloudflare\"}") || {
+      echo "Failed to create tunnel"; exit 1; }
+  tunnel_id=$(echo "$resp" | jq -r '.result.id')
+  token=$(echo "$resp" | jq -r '.result.token')
+  if [[ -z "$tunnel_id" || "$tunnel_id" == "null" ]]; then
+    echo "Unexpected response:"; echo "$resp" | jq .; exit 1
+  fi
+
+  echo "Configuring ingress: ${hostname} -> http://localhost:${PORT}"
+  cf_api PUT "/accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/${tunnel_id}/configurations" \
+    "{\"config\":{\"ingress\":[{\"hostname\":\"${hostname}\",\"service\":\"http://localhost:${PORT}\"},{\"service\":\"http_status:404\"}]}}" \
+    > /dev/null || { echo "Failed to configure ingress"; exit 1; }
+
+  echo "Creating DNS record ${hostname}..."
+  local dns_resp dns_id
+  dns_resp=$(cf_api POST "/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
+    "{\"type\":\"CNAME\",\"name\":\"${hostname}\",\"content\":\"${tunnel_id}.cfargotunnel.com\",\"proxied\":true}") || {
+      echo "Failed to create DNS record"; exit 1; }
+  dns_id=$(echo "$dns_resp" | jq -r '.result.id')
+
+  echo "$token" > "$tunnel_dir/token"
+  chmod 600 "$tunnel_dir/token"
+  cat > "$tunnel_dir/tunnel.json" <<EOF
+{
+  "tunnel_id": "${tunnel_id}",
+  "dns_record_id": "${dns_id}",
+  "hostname": "${hostname}",
+  "port": ${PORT}
+}
+EOF
+
+  echo ""
+  echo "Tunnel ready: https://${hostname} -> localhost:${PORT}"
+
+  if docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
+    echo "Starting cloudflared in running container..."
+    docker exec -u agent -d "$NAME" bash -lc \
+      "nohup cloudflared tunnel run --token \"\$(cat ~/.cloudflared/token)\" > /tmp/cloudflared.log 2>&1 &"
+  else
+    echo "Container ${NAME} is not running; cloudflared will auto-start on next boot."
+  fi
+}
+
+do_tunnel_delete() {
+  local NAME="${1:-}"
+  if [[ -z "$NAME" ]]; then
+    echo "Usage: ac tunnel delete <name>"
+    exit 1
+  fi
+
+  load_env_or_die
+  require_cf_env
+
+  local tunnel_dir="${AC_CONFIG_DIR}/agents/${NAME}/cloudflared"
+  if [[ ! -f "${tunnel_dir}/tunnel.json" ]]; then
+    echo "No tunnel metadata found for ${NAME} at ${tunnel_dir}"
+    exit 1
+  fi
+
+  local tunnel_id dns_id
+  tunnel_id=$(jq -r '.tunnel_id' "${tunnel_dir}/tunnel.json")
+  dns_id=$(jq -r '.dns_record_id' "${tunnel_dir}/tunnel.json")
+
+  if docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
+    echo "Stopping cloudflared in container..."
+    docker exec -u agent "$NAME" bash -lc "pkill -f 'cloudflared tunnel run' || true" 2>/dev/null || true
+  fi
+
+  echo "Deleting DNS record..."
+  cf_api DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${dns_id}" > /dev/null || \
+    echo "  Warning: DNS record delete failed (may already be gone)"
+
+  echo "Deleting tunnel..."
+  cf_api DELETE "/accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/${tunnel_id}" > /dev/null || \
+    echo "  Warning: tunnel delete failed (may already be gone)"
+
+  rm -f "${tunnel_dir}/token" "${tunnel_dir}/tunnel.json"
+  rmdir "${tunnel_dir}" 2>/dev/null || true
+  echo "Tunnel deleted for ${NAME}"
+}
+
+do_tunnel_info() {
+  local NAME="${1:-}"
+  if [[ -z "$NAME" ]]; then
+    echo "Usage: ac tunnel info <name>"
+    exit 1
+  fi
+
+  local tunnel_dir="${AC_CONFIG_DIR}/agents/${NAME}/cloudflared"
+  if [[ ! -f "${tunnel_dir}/tunnel.json" ]]; then
+    echo "No tunnel configured for ${NAME}"
+    exit 1
+  fi
+
+  local hostname port tunnel_id
+  hostname=$(jq -r '.hostname' "${tunnel_dir}/tunnel.json")
+  port=$(jq -r '.port' "${tunnel_dir}/tunnel.json")
+  tunnel_id=$(jq -r '.tunnel_id' "${tunnel_dir}/tunnel.json")
+
+  echo "Tunnel:    ac-${NAME}"
+  echo "Tunnel ID: ${tunnel_id}"
+  echo "URL:       https://${hostname}"
+  echo "Forward:   http://localhost:${port} (inside container)"
+
+  if docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
+    if docker exec "$NAME" pgrep -f 'cloudflared tunnel run' >/dev/null 2>&1; then
+      echo "Status:    cloudflared running"
+    else
+      echo "Status:    container running, cloudflared NOT running"
+    fi
+  else
+    echo "Status:    container not running"
+  fi
+}
+
 do_upgrade_all() {
   local containers
   containers=$(docker ps -a --filter "label=${AC_LABEL}" --format "{{.Names}}")
@@ -664,6 +834,7 @@ Commands:
   sync-auth                      Sync Claude auth from macOS Keychain
   clone <name> <repo-urls...>    Clone repos into container
   run [-f] <name> <repo> <task>  Run Claude in a repo
+  tunnel <cmd> <name> [args]     Manage Cloudflare Tunnels (create|delete|info)
   logs <name>                    View container logs
   info <name>                    Show container info
 
@@ -695,6 +866,15 @@ case "${1:-}" in
   info)      [[ -z "${2:-}" ]] && { echo "Usage: ac info <name>"; exit 1; }; do_info "$2" ;;
   logs)      [[ -z "${2:-}" ]] && { echo "Usage: ac logs <name>"; exit 1; }; docker logs -f "$2" ;;
   run)       shift; do_run "$@" ;;
+  tunnel)
+    shift
+    case "${1:-}" in
+      create) shift; do_tunnel_create "${1:-}" "${2:-}" ;;
+      delete) shift; do_tunnel_delete "${1:-}" ;;
+      info)   shift; do_tunnel_info "${1:-}" ;;
+      *) echo "Usage: ac tunnel <create|delete|info> <name> [args]"; exit 1 ;;
+    esac
+    ;;
   clone)
     [[ -z "${2:-}" || -z "${3:-}" ]] && { echo "Usage: ac clone <name> <repo-urls...>"; exit 1; }
     NAME="$2"; shift 2

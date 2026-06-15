@@ -106,6 +106,16 @@ sudo psql -U postgres -c "ALTER USER postgres PASSWORD 'postgres';" 2>/dev/null 
 echo "[startup] PostgreSQL is ready"
 
 # --------------------------------------------------------------------
+# Cloudflare Tunnel (auto-start if token file present)
+# --------------------------------------------------------------------
+if [[ -f ~/.cloudflared/token ]]; then
+    echo "[startup] Starting Cloudflare Tunnel..."
+    cf_token="$(cat ~/.cloudflared/token)"
+    nohup cloudflared tunnel run --token "$cf_token" > /tmp/cloudflared.log 2>&1 &
+    echo "[startup] cloudflared started (logs: /tmp/cloudflared.log)"
+fi
+
+# --------------------------------------------------------------------
 # Start SSH server
 # --------------------------------------------------------------------
 echo "[startup] Starting sshd..."
