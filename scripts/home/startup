@@ -83,7 +83,8 @@ fi
 
 # Configure pnpm store
 echo "[startup] Configuring pnpm..."
-export PATH="/home/agent/.local/share/pnpm:$PATH"
+export PNPM_HOME="/home/agent/.local/share/pnpm"
+export PATH="$PNPM_HOME/bin:$PATH"
 pnpm config set store-dir /home/agent/.pnpm-store --global 2>&1 || echo "[startup] WARNING: pnpm config failed" >&2
 
 # Ensure correct SSH permissions
@@ -110,9 +111,19 @@ echo "[startup] PostgreSQL is ready"
 # --------------------------------------------------------------------
 if [[ -f ~/.cloudflared/token ]]; then
     echo "[startup] Starting Cloudflare Tunnel..."
-    cf_token="$(cat ~/.cloudflared/token)"
-    nohup cloudflared tunnel run --token "$cf_token" > /tmp/cloudflared.log 2>&1 &
-    echo "[startup] cloudflared started (logs: /tmp/cloudflared.log)"
+    # Wait for virtiofs/bind mount to settle (token can be empty for a moment after boot)
+    cf_token=""
+    for i in {1..10}; do
+        cf_token="$(cat ~/.cloudflared/token 2>/dev/null)"
+        [[ -n "$cf_token" ]] && break
+        sleep 1
+    done
+    if [[ -n "$cf_token" ]]; then
+        nohup cloudflared tunnel run --token "$cf_token" > /tmp/cloudflared.log 2>&1 &
+        echo "[startup] cloudflared started (logs: /tmp/cloudflared.log)"
+    else
+        echo "[startup] WARNING: cloudflared token file present but empty -- skipping"
+    fi
 fi
 
 # --------------------------------------------------------------------
