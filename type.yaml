@@ -36,6 +36,12 @@ mounts:
   - name: zsh-history
     type: volume
     container: /home/agent/.zsh_history
+  - name: nvim-config
+    type: shared
+    container: /home/agent/.config/nvim
+  - name: nvim-data
+    type: shared
+    container: /home/agent/.local/share/nvim
 
 resources:
   memory: 4g
