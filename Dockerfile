@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     nano \
     openssh-client \
     openssh-server \
+    rsync \
     sudo \
     tini \
     vim \
