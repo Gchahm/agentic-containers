@@ -69,12 +69,20 @@ else
     echo "[startup] WARNING: no SSH key and no GH_TOKEN -- git/gh auth will fail"
 fi
 
-# Install Claude Code CLI if not present
+# Install Claude Code CLI if not present (retry a few times to ride out virtiofs warm-up)
 if command -v claude >/dev/null 2>&1; then
     echo "[startup] Claude Code CLI already installed"
 else
-    echo "[startup] Installing Claude Code CLI..."
-    curl -fsSL https://claude.ai/install.sh | bash 2>&1 || echo "[startup] WARNING: Claude Code install failed" >&2
+    mkdir -p ~/.claude/downloads ~/.local/bin 2>/dev/null || true
+    for attempt in 1 2 3; do
+        echo "[startup] Installing Claude Code CLI (attempt ${attempt})..."
+        if curl -fsSL https://claude.ai/install.sh | bash; then
+            break
+        fi
+        echo "[startup] Claude Code install attempt ${attempt} failed; retrying..."
+        sleep 3
+    done
+    command -v claude >/dev/null 2>&1 || echo "[startup] WARNING: Claude Code install failed after retries" >&2
 fi
 
 
