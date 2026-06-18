@@ -225,6 +225,9 @@ do_create() {
   docker_args+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}")
   docker_args+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
   docker_args+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}")
+  docker_args+=(-e "RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER:-}")
+  docker_args+=(-e "RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS:-}")
+  docker_args+=(-e "DRAGONFLY_PASSWORD=${DRAGONFLY_PASSWORD:-}")
 
   # Mount host SSH private key into container for git/gh (read-only)
   if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}" ]]; then

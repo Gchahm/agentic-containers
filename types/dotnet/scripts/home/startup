@@ -8,7 +8,7 @@ umask 077
 echo "[startup] Configuring agent..."
 
 # Fix ownership of Docker named volumes (created as root on first mount)
-for dir in ~/.nuget ~/.dotnet; do
+for dir in ~/.nuget ~/.dotnet /data/rabbitmq /data/redis; do
     if [[ -d "$dir" ]] && [[ "$(stat -c '%U' "$dir" 2>/dev/null)" != "agent" ]]; then
         echo "[startup] Fixing ownership: $dir"
         sudo chown -R agent:agent "$dir"
@@ -93,17 +93,56 @@ chmod 700 ~/.ssh 2>/dev/null || true
 unset GITHUB_USERNAME GIT_NAME GIT_EMAIL GITHUB_OAUTH_TOKEN
 
 # --------------------------------------------------------------------
-# PostgreSQL setup
+# PostgreSQL setup (with TimescaleDB)
 # --------------------------------------------------------------------
 echo "[startup] Starting PostgreSQL..."
-sudo chown -R postgres:postgres /var/lib/postgresql/18/main
-sudo /usr/bin/pg_ctlcluster 18 main start
+sudo chown -R postgres:postgres /var/lib/postgresql/17/main
+sudo /usr/bin/pg_ctlcluster 17 main start
 
 echo "[startup] Waiting for PostgreSQL to be ready..."
 timeout 30 bash -c 'until sudo pg_isready -h localhost >/dev/null 2>&1; do sleep 1; done'
 
 sudo psql -U postgres -c "ALTER USER postgres PASSWORD 'postgres';" 2>/dev/null || true
+sudo psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS timescaledb;" 2>/dev/null || \
+    echo "[startup] WARNING: failed to enable timescaledb extension" >&2
 echo "[startup] PostgreSQL is ready"
+
+# --------------------------------------------------------------------
+# RabbitMQ
+# --------------------------------------------------------------------
+echo "[startup] Starting RabbitMQ..."
+export RABBITMQ_MNESIA_BASE=/data/rabbitmq/mnesia
+export RABBITMQ_LOG_BASE=/data/rabbitmq/log
+export RABBITMQ_NODENAME=rabbit@localhost
+mkdir -p "$RABBITMQ_MNESIA_BASE" "$RABBITMQ_LOG_BASE"
+nohup /usr/sbin/rabbitmq-server > /data/rabbitmq/log/startup.log 2>&1 &
+
+echo "[startup] Waiting for RabbitMQ to be ready..."
+if timeout 60 bash -c 'until rabbitmqctl status >/dev/null 2>&1; do sleep 2; done'; then
+    echo "[startup] RabbitMQ is ready"
+    if [[ -n "${RABBITMQ_DEFAULT_USER:-}" ]] && [[ -n "${RABBITMQ_DEFAULT_PASS:-}" ]]; then
+        if ! rabbitmqctl list_users 2>/dev/null | awk '{print $1}' | grep -qx "$RABBITMQ_DEFAULT_USER"; then
+            echo "[startup] Creating RabbitMQ user ${RABBITMQ_DEFAULT_USER}..."
+            rabbitmqctl add_user "$RABBITMQ_DEFAULT_USER" "$RABBITMQ_DEFAULT_PASS" 2>/dev/null || true
+            rabbitmqctl set_user_tags "$RABBITMQ_DEFAULT_USER" administrator 2>/dev/null || true
+            rabbitmqctl set_permissions -p / "$RABBITMQ_DEFAULT_USER" ".*" ".*" ".*" 2>/dev/null || true
+        fi
+    fi
+else
+    echo "[startup] WARNING: RabbitMQ did not become ready in time" >&2
+fi
+
+# --------------------------------------------------------------------
+# Dragonfly (Redis-compatible)
+# --------------------------------------------------------------------
+echo "[startup] Starting Dragonfly..."
+mkdir -p /data/redis
+df_args=(--proactor_threads 1 --dir /data/redis --bind 0.0.0.0 --logtostderr)
+if [[ -n "${DRAGONFLY_PASSWORD:-}" ]]; then
+    df_args+=(--requirepass "$DRAGONFLY_PASSWORD")
+fi
+nohup /usr/local/bin/dragonfly "${df_args[@]}" > /tmp/dragonfly.log 2>&1 &
+echo "[startup] Dragonfly started (logs: /tmp/dragonfly.log)"
 
 # --------------------------------------------------------------------
 # Cloudflare Tunnel (auto-start if token file present)

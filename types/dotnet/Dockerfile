@@ -36,9 +36,9 @@ RUN apt-get update && apt-get install -y \
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
-# Install PostgreSQL 18 and GitHub CLI
+# Install PostgreSQL 17 + TimescaleDB, GitHub CLI, RabbitMQ
 RUN set -eux; \
-    # PostgreSQL 18
+    # PostgreSQL 17 (pgdg)
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
       gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
@@ -49,13 +49,28 @@ RUN set -eux; \
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list; \
+    # TimescaleDB (using bookworm repo; package is OS-independent, works on trixie)
+    curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey | \
+      gpg --dearmor -o /usr/share/keyrings/timescaledb-keyring.gpg; \
+    echo "deb [signed-by=/usr/share/keyrings/timescaledb-keyring.gpg] https://packagecloud.io/timescale/timescaledb/debian/ bookworm main" \
+      > /etc/apt/sources.list.d/timescaledb.list; \
     apt-get update && apt-get install -y \
-      postgresql-18 postgresql-client-18 \
-      gh; \
+      postgresql-17 postgresql-client-17 \
+      timescaledb-2-postgresql-17 \
+      gh \
+      rabbitmq-server; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql; \
-    echo "listen_addresses = '*'" >> /etc/postgresql/18/main/postgresql.conf; \
-    echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/18/main/pg_hba.conf
+    # Configure PostgreSQL: network access + TimescaleDB preload
+    echo "listen_addresses = '*'" >> /etc/postgresql/17/main/postgresql.conf; \
+    echo "shared_preload_libraries = 'timescaledb'" >> /etc/postgresql/17/main/postgresql.conf; \
+    echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/17/main/pg_hba.conf; \
+    # RabbitMQ: enable management plugin, point data/log dirs at /data/rabbitmq
+    rabbitmq-plugins enable --offline rabbitmq_management; \
+    mkdir -p /data/rabbitmq/mnesia /data/rabbitmq/log /data/redis; \
+    chown -R agent:agent /data; \
+    printf 'NODENAME=rabbit@localhost\nMNESIA_BASE=/data/rabbitmq/mnesia\nLOG_BASE=/data/rabbitmq/log\n' \
+      > /etc/rabbitmq/rabbitmq-env.conf
 
 # Install latest Neovim from upstream
 RUN set -eux; \
@@ -79,6 +94,20 @@ RUN set -eux; \
     dpkg -i /tmp/cloudflared.deb; \
     rm /tmp/cloudflared.deb
 
+# Install Dragonfly (Redis-compatible in-memory store)
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) df_arch="x86_64" ;; \
+      arm64) df_arch="aarch64" ;; \
+      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/dragonflydb/dragonfly/releases/latest/download/dragonfly-${df_arch}.tar.gz" \
+      -o /tmp/dragonfly.tar.gz; \
+    tar -xzf /tmp/dragonfly.tar.gz -C /tmp; \
+    install -m 755 "/tmp/dragonfly-${df_arch}" /usr/local/bin/dragonfly; \
+    rm -rf /tmp/dragonfly.tar.gz "/tmp/dragonfly-${df_arch}"
+
 # Install .NET SDK (channel-based, defaults to 10.0)
 ARG DOTNET_VERSION=10.0
 ENV DOTNET_ROOT=/usr/share/dotnet
@@ -94,9 +123,10 @@ RUN set -eux; \
 
 # Create agent user with targeted sudo permissions
 RUN useradd -m -s /bin/zsh -u 1000 agent && \
-    echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sshd, /usr/bin/pg_ctlcluster, /usr/bin/pg_isready, /usr/bin/psql, /usr/bin/chown" \
+    echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sshd, /usr/bin/pg_ctlcluster, /usr/bin/pg_isready, /usr/bin/psql, /usr/bin/chown, /usr/sbin/rabbitmq-server, /usr/sbin/rabbitmqctl, /usr/sbin/rabbitmq-plugins" \
       > /etc/sudoers.d/agent && \
-    chmod 0440 /etc/sudoers.d/agent
+    chmod 0440 /etc/sudoers.d/agent && \
+    chown -R agent:agent /data /var/lib/rabbitmq /etc/rabbitmq
 
 # Make /etc/environment writable by agent (for persisting env vars through SSH sessions)
 RUN chmod 666 /etc/environment
@@ -151,6 +181,6 @@ COPY --chown=agent:agent scripts/home/. /usr/local/bin/
 
 WORKDIR /home/agent/workspace
 
-EXPOSE 22 5000 5432
+EXPOSE 22 5000 5432 5672 15672 6379
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/startup"]
