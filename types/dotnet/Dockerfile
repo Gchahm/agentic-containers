@@ -115,8 +115,9 @@ RUN mkdir -p /opt/ac && chown agent:agent /opt/ac
 USER agent
 WORKDIR /home/agent
 
-# Set up pure prompt and uv (Python tools handy for MCP/tooling)
-RUN mkdir -p /home/agent/.zsh && \
+# Pre-create dirs that bind mounts and Claude installer expect to be agent-owned
+# (Docker auto-creates parent dirs of mounts as root, which blocks ~/.local/share writes)
+RUN mkdir -p /home/agent/.zsh /home/agent/.local/bin /home/agent/.local/share && \
     git clone https://github.com/sindresorhus/pure.git "$HOME/.zsh/pure"
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

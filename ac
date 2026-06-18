@@ -91,7 +91,7 @@ do_build() {
   local image
   image=$(get_image_name "$TYPE")
   echo "Building ${image} image (type: ${TYPE})..."
-  docker build "${build_args[@]}" "$@" -t "$image" "$(type_dir "$TYPE")"
+  docker build ${build_args[@]+"${build_args[@]}"} "$@" -t "$image" "$(type_dir "$TYPE")"
 }
 
 do_create() {
