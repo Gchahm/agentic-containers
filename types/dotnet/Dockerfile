@@ -3,6 +3,7 @@ ARG DEBIAN_VERSION=trixie-20250908-slim
 FROM debian:${DEBIAN_VERSION}
 
 LABEL ac_agent=true
+LABEL ac_type=dotnet
 
 # Install all dependencies in one layer
 RUN apt-get update && apt-get install -y \
@@ -14,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     inotify-tools \
     jq \
     less \
+    libicu76 \
     locales \
     lsb-release \
     make \
@@ -47,17 +49,15 @@ RUN set -eux; \
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list; \
-    # Install all
     apt-get update && apt-get install -y \
       postgresql-18 postgresql-client-18 \
       gh; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql; \
-    # Configure PostgreSQL for network access at build time
     echo "listen_addresses = '*'" >> /etc/postgresql/18/main/postgresql.conf; \
     echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/18/main/pg_hba.conf
 
-# Install latest Neovim from upstream (apt version lags behind)
+# Install latest Neovim from upstream
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
@@ -78,6 +78,19 @@ RUN set -eux; \
       -o /tmp/cloudflared.deb; \
     dpkg -i /tmp/cloudflared.deb; \
     rm /tmp/cloudflared.deb
+
+# Install .NET SDK (channel-based, defaults to 10.0)
+ARG DOTNET_VERSION=10.0
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="/usr/share/dotnet:/home/agent/.dotnet/tools:${PATH}"
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_NOLOGO=1
+RUN set -eux; \
+    curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh; \
+    chmod +x /tmp/dotnet-install.sh; \
+    /tmp/dotnet-install.sh --channel "${DOTNET_VERSION}" --install-dir /usr/share/dotnet; \
+    rm /tmp/dotnet-install.sh; \
+    chmod -R a+rx /usr/share/dotnet
 
 # Create agent user with targeted sudo permissions
 RUN useradd -m -s /bin/zsh -u 1000 agent && \
@@ -102,50 +115,13 @@ RUN mkdir -p /opt/ac && chown agent:agent /opt/ac
 USER agent
 WORKDIR /home/agent
 
-# Install nvm with Node 22 (LTS default) and Node 24
-ENV NVM_DIR="/home/agent/.nvm"
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && \
-    . "$NVM_DIR/nvm.sh" && \
-    nvm install 22 && \
-    nvm install 24 && \
-    nvm alias default 22 && \
-    ln -s "$(dirname "$(nvm which default)")" "$NVM_DIR/default-bin"
-
-# Setup npm global directory, pnpm, and pure prompt
-RUN mkdir -p /home/agent/.npm-global /home/agent/.pnpm-store /home/agent/.zsh && \
-    . "$NVM_DIR/nvm.sh" && \
-    npm config set prefix '/home/agent/.npm-global' && \
-    npm config delete prefix && \
-    wget -qO- https://get.pnpm.io/install.sh | ENV="$HOME/.zshrc" SHELL="$(which zsh)" zsh - && \
+# Set up pure prompt and uv (Python tools handy for MCP/tooling)
+RUN mkdir -p /home/agent/.zsh && \
     git clone https://github.com/sindresorhus/pure.git "$HOME/.zsh/pure"
 
-ENV PATH="/home/agent/.nvm/default-bin:/home/agent/.npm-global/bin:${PATH}"
-
-# Install uv (Python package manager, useful for MCP tools)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-USER root
-
-# Install Playwright system dependencies and Chromium
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
-ENV PLAYWRIGHT_MCP_SANDBOX=false
-ENV PLAYWRIGHT_MCP_OUTPUT_DIR=.playwright-cli
-RUN . "/home/agent/.nvm/nvm.sh" && nvm use 22 && \
-    npm install -g @playwright/cli@latest && \
-    node "$(npm root -g)/@playwright/cli/node_modules/playwright/cli.js" install --with-deps chromium && \
-    chmod -R 777 /opt/playwright && \
-    mkdir -p /opt/google/chrome && \
-    ln -s "$(find /opt/playwright -name chrome -path '*/chromium-*/chrome' -type f | head -1)" /opt/google/chrome/chrome
-
 # --- Everything below here changes frequently and rebuilds fast ---
-
-USER agent
-
-# Install Playwright CLI skills and stage them
-RUN . "$NVM_DIR/nvm.sh" && nvm use 22 && \
-    playwright-cli install --skills && \
-    mkdir -p /opt/ac/claude/skills && \
-    cp -r /home/agent/.claude/skills/. /opt/ac/claude/skills/
 
 # Install Claude Code Damage Control hooks from git
 RUN git clone --depth 1 https://github.com/Gchahm/claude-code-damage-control.git /tmp/damage-control && \
@@ -174,6 +150,6 @@ COPY --chown=agent:agent scripts/home/. /usr/local/bin/
 
 WORKDIR /home/agent/workspace
 
-EXPOSE 22 3000 5432
+EXPOSE 22 5000 5432
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/startup"]

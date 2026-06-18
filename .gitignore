@@ -1,3 +1,4 @@
 .env
 .extras
+types/*/.extras
 .DS_Store

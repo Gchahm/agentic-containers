@@ -1,0 +1,54 @@
+name: dotnet
+description: '.NET 10 development container with PostgreSQL'
+image_name: dotnet-agent
+label: ac_agent
+
+ports:
+  - name: ssh
+    host_base: 2700
+    container: 22
+  - name: http
+    host_base: 5000
+    container: 5000
+  - name: postgres
+    host_base: 5700
+    container: 5432
+
+mounts:
+  - name: workspace
+    type: bind
+    container: /home/agent/workspace
+  - name: cloudflared
+    type: bind
+    container: /home/agent/.cloudflared
+  - name: claude
+    type: shared
+    container: /home/agent/.claude
+  - name: nuget-cache
+    type: volume
+    container: /home/agent/.nuget
+  - name: dotnet-tools
+    type: volume
+    container: /home/agent/.dotnet
+  - name: postgres
+    type: volume
+    container: /var/lib/postgresql/18/main
+  - name: zsh-history
+    type: volume
+    container: /home/agent/.zsh_history
+  - name: nvim-config
+    type: shared
+    container: /home/agent/.config/nvim
+  - name: nvim-data
+    type: shared
+    container: /home/agent/.local/share/nvim
+
+resources:
+  memory: 4g
+  cpus: 2
+
+required_env:
+  - GIT_NAME
+  - GIT_EMAIL
+  - GITHUB_USERNAME
+  - GH_TOKEN

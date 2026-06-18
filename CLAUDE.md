@@ -1,73 +1,62 @@
 # Agentic Containers
 
-Standalone Docker container manager for TypeScript/Node.js development. Provides isolated dev environments with Claude Code, SSH access, and common tooling pre-installed.
+Standalone Docker container manager for isolated dev environments. Ships with Claude Code, SSH access, PostgreSQL, and common tooling. Supports multiple container types in one repo.
 
 ## Project Structure
 
 ```
 ac                         CLI script (bash) — manages containers via Docker
 install                    Symlinks ac to /usr/local/bin
-type.yaml                  Container configuration (ports, mounts, resources, required env vars)
-Dockerfile                 Container image definition
 .env.example               Environment variable template (user copies to .env)
-configs/home/              Files copied into /home/agent/ at build time
-  .zshenv                  PATH setup for all shell types (non-interactive included)
-  .zshrc                   Interactive shell config (aliases, prompt, tmux)
-  .gitconfig               Git identity (templated — {GIT_NAME}, {GIT_EMAIL} replaced at startup)
-  .ssh/config              SSH client config (GitHub host pinning)
-  .config/gh/              GitHub CLI config (templated — {GITHUB_USERNAME} replaced at startup)
-  .claude.json             Claude Code onboarding state
-  .claude/settings.json    Claude Code settings (hooks, model, statusline)
-  .claude/CLAUDE.md        Instructions for Claude inside the container
-  .claude/statusline.sh    Status bar script for Claude Code
-  .claude/hooks/           Claude Code event hooks (start, stop, notification, etc.)
-  .tmux.conf               Tmux configuration
-scripts/home/              Scripts available inside container
-  startup                  Container entrypoint (runs as agent, sets up postgres, ssh, auth, then exec sshd)
-  help                     Help command
-  yolo                     Launch Claude Code with --dangerously-skip-permissions
+types/
+  <type>/
+    Dockerfile             Image definition for this type
+    type.yaml              Container config (ports, mounts, resources, required env)
+    configs/home/          Files copied into /home/agent/ at build time
+      .zshenv .zshrc .gitconfig .ssh/config .config/gh/ .claude/ .tmux.conf
+    scripts/home/          Scripts available inside container
+      startup help yolo
+    .extras                Optional, gitignored — user shell customizations
 ```
 
-## Container Stack
+Current types:
+- `typescript` — Node.js 22/24, pnpm, Playwright + Chromium
+- `dotnet` — .NET SDK 10 (override via `DOTNET_VERSION` env or `--build-arg`)
 
-- Debian (slim) base
-- Node.js 22 (default) + 24 via nvm
-- pnpm, npm
-- PostgreSQL 18
-- Playwright + Chromium
-- Claude Code CLI (installed at startup if missing)
-- GitHub CLI, SSH server, tmux, zsh + Pure prompt, uv, jq
+Both types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, SSH server, tmux, zsh + Pure, neovim (upstream), uv, cloudflared, rsync.
 
 ## How It Works
 
-1. `ac build` — builds Docker image `ts-agent` from the Dockerfile
-2. `ac create <name> [index]` — creates a container with port mappings derived from type.yaml (base + index), mounts volumes, passes env vars from .env, installs SSH key, configures SSH config on host
-3. Container startup (`scripts/root/startup`) — configures git auth, PostgreSQL, Claude Code, pnpm, then runs sshd as the main process
-4. User connects via `ac shell`, `ac open` (VS Code), or direct SSH
+1. `ac build <type>` — builds the type's Docker image (e.g., `ts-agent`, `dotnet-agent`).
+2. `ac create <type> <name> [index]` — runs a container with port mappings derived from the type's `type.yaml` (base + index), mounts volumes, passes env vars from `.env`, installs SSH key, configures host SSH config. Labels the container with `ac_type=<type>`.
+3. Container startup — configures git auth, PostgreSQL, Claude Code, optional cloudflared, then `exec sshd`.
+4. User connects via `ac shell`, `ac open` (VS Code), or `ssh <name>` (config installed automatically).
+
+Other subcommands resolve the type from the container's `ac_type` label and default to `typescript` if missing (covers pre-multi-type containers).
 
 ## Key Design Decisions
 
-- **No project-specific init** — this is a generic template. Users clone their own repos after container creation.
-- **Single type** — no types/ directory. The root IS the type. Customize type.yaml directly.
-- **Startup runs as root** — needed for PostgreSQL and sshd. Switches to agent user for all interactive work.
-- **Bind mount for workspace** — persists at `~/.config/ac/agents/<name>/workspace/`
-- **Shared mount for .claude/** — all containers share Claude credentials at `~/.config/ac/shared/claude/`
-- **Named volumes** — npm-global, pnpm-store, postgres data, zsh history survive container recreation
+- **Per-type Dockerfile, configs, scripts** — duplication keeps each type self-contained. No shared base today; refactor later if drift becomes painful.
+- **Single index pool across types** — `ac_index` is unique across the entire `ac_agent` label set. Per-type port ranges (typescript 2600/3000/5600, dotnet 2700/5000/5700) avoid clashes within an index.
+- **Bind mount for workspace** — persists at `~/.config/ac/agents/<name>/workspace/`.
+- **Shared mounts for Claude + nvim** — all containers share at `~/.config/ac/shared/<name>/` so credentials, nvim config, and plugin data persist across types and containers.
+- **Named volumes** — language stores (pnpm, nuget), postgres data, zsh history survive container recreation.
+- **SSH key bind mount** — host key bind-mounted read-only into container; rotation on host flows through automatically.
 
-## Port Scheme (type.yaml)
+## Modifying a Type
 
-Host port = host_base + container index. Default bases:
-- SSH: 2600 (container 22)
-- HTTP: 3000 (container 3000)
-- PostgreSQL: 5600 (container 5432)
+- **Add system packages** — edit `apt-get install` in `types/<type>/Dockerfile`
+- **Change runtime version** — typescript: nvm lines; dotnet: `DOTNET_VERSION` ARG / .env
+- **Add services** — edit `types/<type>/scripts/home/startup` (start before sshd exec)
+- **Add ports** — `ports:` in `types/<type>/type.yaml`
+- **Add persistent storage** — `mounts:` in `types/<type>/type.yaml`
+- **Change container resources** — `resources:` in `types/<type>/type.yaml`
+- **Customize shell** — `types/<type>/configs/home/.zshrc` and `.zshenv`
+- **Customize Claude** — `types/<type>/configs/home/.claude/settings.json` and `.claude/CLAUDE.md`
 
-## Modifying the Template
+## Adding a New Type
 
-- **Add system packages** — edit the `apt-get install` block in Dockerfile
-- **Change Node version** — edit the nvm install lines in Dockerfile
-- **Add services** — edit `scripts/home/startup` (start before sshd exec)
-- **Add ports** — add entries to `ports:` in type.yaml
-- **Add persistent storage** — add entries to `mounts:` in type.yaml
-- **Change container resources** — edit `resources:` in type.yaml
-- **Customize shell** — edit `configs/home/.zshrc` and `.zshenv`
-- **Customize Claude** — edit `configs/home/.claude/settings.json` and `configs/home/.claude/CLAUDE.md`
+1. Copy an existing type dir: `cp -r types/typescript types/<newtype>`
+2. Edit `types/<newtype>/type.yaml` — set `name`, `image_name`, port `host_base`s (unique across types)
+3. Edit `types/<newtype>/Dockerfile` — add `LABEL ac_type=<newtype>`, install the toolchain you need
+4. `ac build <newtype>` then `ac create <newtype> <name>`

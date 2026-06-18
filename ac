@@ -8,14 +8,45 @@ set -euo pipefail
 AC_DIR="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
 AC_CONFIG_DIR="${HOME}/.config/ac"
 AC_LABEL="ac_agent"
+DEFAULT_TYPE="typescript"
 
-get_yaml_value() {
-  local key=$1
-  grep "^${key}:" "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/^[^:]*: *//' | tr -d "'"'"'
+type_dir() {
+  echo "${AC_DIR}/types/${1}"
 }
 
-IMAGE_NAME=$(get_yaml_value "image_name")
-IMAGE_NAME="${IMAGE_NAME:-ts-agent}"
+type_yaml() {
+  echo "${AC_DIR}/types/${1}/type.yaml"
+}
+
+type_exists() {
+  [[ -f "$(type_yaml "$1")" ]]
+}
+
+get_yaml_value() {
+  local type=$1 key=$2
+  grep "^${key}:" "$(type_yaml "$type")" 2>/dev/null | sed 's/^[^:]*: *//' | tr -d "'"'"'
+}
+
+get_image_name() {
+  local type=$1
+  local n
+  n=$(get_yaml_value "$type" "image_name")
+  echo "${n:-${type}-agent}"
+}
+
+# Resolve type from container label, defaulting to DEFAULT_TYPE for legacy containers.
+container_type() {
+  local name=$1
+  local t
+  t=$(docker inspect --format '{{index .Config.Labels "ac_type"}}' "$name" 2>/dev/null || true)
+  [[ -z "$t" || "$t" == "<no value>" ]] && t="$DEFAULT_TYPE"
+  echo "$t"
+}
+
+list_types() {
+  find "${AC_DIR}/types" -maxdepth 2 -name type.yaml 2>/dev/null \
+    | sed "s|${AC_DIR}/types/||; s|/type.yaml||" | sort
+}
 
 # ============================================================================
 # Container management
@@ -32,18 +63,56 @@ next_available_index() {
 }
 
 do_build() {
-  echo "Building ${IMAGE_NAME} image..."
-  docker build "$@" -t "$IMAGE_NAME" "$AC_DIR"
+  local TYPE="${1:-}"
+  if [[ -z "$TYPE" ]]; then
+    echo "Usage: ac build <type> [docker-args]"
+    echo "Available types: $(list_types | tr '\n' ' ')"
+    exit 1
+  fi
+  if ! type_exists "$TYPE"; then
+    echo "Unknown type: $TYPE"
+    echo "Available types: $(list_types | tr '\n' ' ')"
+    exit 1
+  fi
+  shift
+
+  # Pass through known env-based build args if present in .env
+  local build_args=()
+  if [[ -f "${AC_DIR}/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "${AC_DIR}/.env"
+    set +a
+    for v in DOTNET_VERSION DEBIAN_VERSION; do
+      [[ -n "${!v:-}" ]] && build_args+=(--build-arg "${v}=${!v}")
+    done
+  fi
+
+  local image
+  image=$(get_image_name "$TYPE")
+  echo "Building ${image} image (type: ${TYPE})..."
+  docker build "${build_args[@]}" "$@" -t "$image" "$(type_dir "$TYPE")"
 }
 
 do_create() {
-  local NAME="${1:-}"
-  local INSTANCE="${2:-}"
+  local TYPE="${1:-}"
+  local NAME="${2:-}"
+  local INSTANCE="${3:-}"
 
-  if [[ -z "$NAME" ]]; then
-    echo "Usage: ac create <name> [index]"
+  if [[ -z "$TYPE" || -z "$NAME" ]]; then
+    echo "Usage: ac create <type> <name> [index]"
+    echo "Available types: $(list_types | tr '\n' ' ')"
     exit 1
   fi
+  if ! type_exists "$TYPE"; then
+    echo "Unknown type: $TYPE"
+    echo "Available types: $(list_types | tr '\n' ' ')"
+    exit 1
+  fi
+
+  local TYPE_DIR; TYPE_DIR=$(type_dir "$TYPE")
+  local TYPE_YAML; TYPE_YAML=$(type_yaml "$TYPE")
+  local IMAGE_NAME; IMAGE_NAME=$(get_image_name "$TYPE")
 
   # Auto-assign index
   if [[ -z "$INSTANCE" ]]; then
@@ -71,7 +140,7 @@ do_create() {
 
   # Check required env vars
   local required_env
-  required_env=$(sed -n '/^required_env:/,/^[a-z]/{ /^  *- /p; }' "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/.*- //')
+  required_env=$(sed -n '/^required_env:/,/^[a-z]/{ /^  *- /p; }' "${TYPE_YAML}" 2>/dev/null | sed 's/.*- //')
   local missing=()
   for var in $required_env; do
     if [[ -z "${!var:-}" ]]; then
@@ -130,13 +199,13 @@ do_create() {
   # Build docker run arguments
   local docker_args=()
   docker_args+=(--name "${NAME}" --hostname "${NAME}")
-  docker_args+=(--label "${AC_LABEL}=true" --label "ac_index=${INSTANCE}")
+  docker_args+=(--label "${AC_LABEL}=true" --label "ac_index=${INSTANCE}" --label "ac_type=${TYPE}")
   docker_args+=(--restart=unless-stopped --network ac-network)
 
   # Resources from type.yaml
   local memory cpus
-  memory=$(grep '  memory:' "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/.*: *//' || echo "4g")
-  cpus=$(grep '  cpus:' "${AC_DIR}/type.yaml" 2>/dev/null | sed 's/.*: *//' || echo "2")
+  memory=$(grep '  memory:' "${TYPE_YAML}" 2>/dev/null | sed 's/.*: *//' || echo "4g")
+  cpus=$(grep '  cpus:' "${TYPE_YAML}" 2>/dev/null | sed 's/.*: *//' || echo "2")
   docker_args+=(--memory="${memory}" --cpus="${cpus}" --pids-limit=4096)
 
   # Detect host timezone
@@ -192,7 +261,7 @@ do_create() {
         mount_name="" mount_type="" mount_container=""
       fi
     fi
-  done < "${AC_DIR}/type.yaml"
+  done < "${TYPE_YAML}"
 
   # Parse ports from type.yaml
   local in_ports=0 port_host_base="" port_info="" ssh_port=""
@@ -211,7 +280,7 @@ do_create() {
         if [[ "$port_container" == "22" ]]; then ssh_port="$host_port"; fi
       fi
     fi
-  done < "${AC_DIR}/type.yaml"
+  done < "${TYPE_YAML}"
 
   # Check for port conflicts
   local conflicts=0
@@ -307,8 +376,8 @@ do_delete() {
 do_list() {
   echo "=== Containers ==="
   {
-    printf "NAMES\tIMAGE\tSTATUS\tPORTS\n"
-    docker ps -a --filter "label=${AC_LABEL}" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | sort
+    printf "NAMES\tTYPE\tIMAGE\tSTATUS\tPORTS\n"
+    docker ps -a --filter "label=${AC_LABEL}" --format "{{.Names}}\t{{.Label \"ac_type\"}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | sort
   } | column -t -s $'\t'
 
   echo ""
@@ -673,11 +742,6 @@ do_upgrade_all() {
   local container_count
   container_count=$(echo "$containers" | wc -l | tr -d ' ')
 
-  # Parse SSH host_base for index recovery from port
-  local ssh_base
-  ssh_base=$(awk '/^ports:/,/^[a-z]/{ if (/name: ssh/) found=1; if (found && /host_base:/) { print $2; exit } }' "${AC_DIR}/type.yaml")
-  ssh_base="${ssh_base:-2600}"
-
   echo ""
   echo "================================================================"
   echo "                    AC CONTAINER UPGRADE                        "
@@ -696,21 +760,18 @@ do_upgrade_all() {
     return 0
   fi
 
-  echo ""
-  read -p "Rebuild ${IMAGE_NAME} image (--no-cache)? (Recommended) [Y/n]: " reply
-  if [[ ! "$reply" =~ ^[Nn]$ ]]; then
-    echo "Building ${IMAGE_NAME} image..."
-    if ! do_build --no-cache; then
-      echo "Error building image. Aborting."
-      exit 1
-    fi
-  else
-    echo "Skipping image rebuild."
-  fi
-
-  # Pre-scan: collect metadata
-  local scan_names=() scan_indices=() scan_running=()
+  # Pre-scan: collect metadata per container, group by type for rebuilding
+  local scan_names=() scan_indices=() scan_running=() scan_types=()
+  declare -A types_to_build
   for name in $containers; do
+    local ctype
+    ctype=$(container_type "$name")
+    types_to_build["$ctype"]=1
+
+    local ssh_base
+    ssh_base=$(awk '/^ports:/,/^[a-z]/{ if (/name: ssh/) found=1; if (found && /host_base:/) { print $2; exit } }' "$(type_yaml "$ctype")")
+    ssh_base="${ssh_base:-2600}"
+
     local index
     index=$(docker inspect --format '{{index .Config.Labels "ac_index"}}' "$name" 2>/dev/null || true)
     if [[ -z "$index" || "$index" == "<no value>" ]]; then
@@ -731,6 +792,21 @@ do_upgrade_all() {
     scan_names+=("$name")
     scan_indices+=("$index")
     scan_running+=("$running")
+    scan_types+=("$ctype")
+  done
+
+  # Build images per detected type
+  echo ""
+  for t in "${!types_to_build[@]}"; do
+    read -p "Rebuild ${t} image (--no-cache)? (Recommended) [Y/n]: " reply
+    if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+      if ! do_build "$t" --no-cache; then
+        echo "Error building ${t} image. Aborting."
+        exit 1
+      fi
+    else
+      echo "Skipping ${t} image rebuild."
+    fi
   done
 
   # Resolve index conflicts (first-come keeps, conflicts get reassigned)
@@ -768,9 +844,10 @@ do_upgrade_all() {
     local name="${scan_names[$i]}"
     local index="${scan_indices[$i]}"
     local was_running="${scan_running[$i]}"
+    local ctype="${scan_types[$i]}"
     current=$((current + 1))
 
-    echo "[$current/$container_count] Upgrading '$name' (index $index)..."
+    echo "[$current/$container_count] Upgrading '$name' (type $ctype, index $index)..."
 
     echo -n "      Stopping container... "
     if [[ "$was_running" == "true" ]]; then
@@ -788,7 +865,7 @@ do_upgrade_all() {
     fi
 
     echo -n "      Creating container... "
-    if "$self" create "$name" "$index" > /dev/null 2>&1; then
+    if "$self" create "$ctype" "$name" "$index" > /dev/null 2>&1; then
       echo "Done"
     else
       echo "Failed"
@@ -815,34 +892,37 @@ do_upgrade_all() {
 }
 
 show_help() {
-  cat <<'EOF'
-Agentic Containers (ac) - TypeScript dev container manager
+  cat <<EOF
+Agentic Containers (ac) - multi-type dev container manager
 
 Usage: ac <command> [arguments]
 
 Commands:
-  build [docker-args]            Build the container image
-  create <name> [index]          Create a new container
-  delete <name>                  Delete a container
-  upgrade-all                    Rebuild image and recreate all containers
-  list                           List all containers
-  start <name>                   Start a stopped container
-  stop <name>                    Stop a container
+  build <type> [docker-args]       Build a type's image
+  create <type> <name> [index]     Create a container of a type
+  delete <name>                    Delete a container
+  upgrade-all                      Rebuild images and recreate all containers
+  list                             List all containers
+  types                            List available types
+  start <name>                     Start a stopped container
+  stop <name>                      Stop a container
   shell [--no-tmux] <name> [repo]  Open interactive shell
-  open <name> [repo]             Open in VS Code via SSH
-  setup-ssh <name> [port]        Setup SSH config
-  sync-auth                      Sync Claude auth from macOS Keychain
-  clone <name> <repo-urls...>    Clone repos into container
-  run [-f] <name> <repo> <task>  Run Claude in a repo
-  tunnel <cmd> <name> [args]     Manage Cloudflare Tunnels (create|delete|info)
-  logs <name>                    View container logs
-  info <name>                    Show container info
+  open <name> [repo]               Open in VS Code via SSH
+  setup-ssh <name> [port]          Setup SSH config
+  sync-auth                        Sync Claude auth from macOS Keychain
+  clone <name> <repo-urls...>      Clone repos into container
+  run [-f] <name> <repo> <task>    Run Claude in a repo
+  tunnel <cmd> <name> [args]       Manage Cloudflare Tunnels (create|delete|info)
+  logs <name>                      View container logs
+  info <name>                      Show container info
+
+Available types: $(list_types | tr '\n' ' ')
 
 Examples:
-  ac build                       # Build the image
-  ac create t1                   # Create container (index auto-assigned)
-  ac shell t1                    # Shell into container
-  ac open t1 my-project          # Open in VS Code
+  ac build typescript              # Build the typescript image
+  ac create typescript t1          # Create container
+  ac shell t1                      # Shell into container
+  ac open t1 my-project            # Open in VS Code
 EOF
 }
 
@@ -853,7 +933,8 @@ EOF
 case "${1:-}" in
   help|-h|--help) show_help ;;
   build)     shift; do_build "$@" ;;
-  create)    do_create "${2:-}" "${3:-}" ;;
+  create)    do_create "${2:-}" "${3:-}" "${4:-}" ;;
+  types)     list_types ;;
   delete)    [[ -z "${2:-}" ]] && { echo "Usage: ac delete <name>"; exit 1; }; do_delete "$2" ;;
   upgrade-all) do_upgrade_all ;;
   list)      do_list ;;

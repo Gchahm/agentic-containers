@@ -1,6 +1,6 @@
 # Agentic Containers
 
-Isolated Docker dev environments for TypeScript/Node.js with Claude Code, SSH access, PostgreSQL, and common tooling pre-installed.
+Isolated Docker dev environments with Claude Code, SSH access, PostgreSQL, and common tooling pre-installed. Multiple container types — currently `typescript` (Node.js, pnpm, Playwright) and `dotnet` (.NET SDK 10).
 
 ## Prerequisites
 
@@ -41,33 +41,41 @@ Isolated Docker dev environments for TypeScript/Node.js with Claude Code, SSH ac
    | `ANTHROPIC_AUTH_TOKEN` | Anthropic auth token |
    | `ANTHROPIC_BASE_URL` | Custom API base URL |
 
-3. **Build the Docker image:**
+3. **Build a type's image:**
 
    ```bash
-   ac build
+   ac build typescript
+   # or:
+   ac build dotnet
    ```
+
+   List available types with `ac types`.
+
+   To override `.NET` version: set `DOTNET_VERSION=9.0` in `.env`, or pass `--build-arg DOTNET_VERSION=9.0` after the type.
 
 ## Usage
 
 ### Create a container
 
 ```bash
-ac create my-project
+ac create typescript my-project
+# or:
+ac create dotnet my-api
 ```
 
 This auto-assigns an index (1, 2, 3...) that determines port mappings. You can also specify one explicitly:
 
 ```bash
-ac create my-project 5
+ac create typescript my-project 5
 ```
 
-Default port scheme (host port = base + index):
+Port scheme (host port = base + index, base depends on type):
 
-| Service | Base Port | Example (index 1) |
+| Service | typescript base | dotnet base |
 |---|---|---|
-| SSH | 2600 | 2601 |
-| HTTP | 3000 | 3001 |
-| PostgreSQL | 5600 | 5601 |
+| SSH | 2600 | 2700 |
+| HTTP | 3000 | 5000 |
+| PostgreSQL | 5600 | 5700 |
 
 After creation, the container is accessible via SSH using its name directly (e.g., `ssh my-project`).
 
@@ -143,13 +151,15 @@ ac sync-auth                 # Sync Claude Code credentials from macOS Keychain
 
 ## What's inside each container
 
+Shared by all types:
 - Debian (slim) base
-- Node.js 22 (default) + 24 via `nvm use 24`
-- pnpm, npm
 - PostgreSQL 18 (localhost:5432, user: `postgres`, password: `postgres`)
-- Playwright + Chromium
 - Claude Code CLI
-- GitHub CLI, tmux, zsh with Pure prompt, uv, jq
+- GitHub CLI, tmux, zsh + Pure prompt, neovim (upstream), uv, jq, rsync, cloudflared
+
+Type-specific:
+- **typescript**: Node.js 22 (default) + 24 via nvm, pnpm/npm, Playwright + Chromium
+- **dotnet**: .NET SDK 10 (override with `DOTNET_VERSION`)
 
 ## Persistent data
 
@@ -159,17 +169,19 @@ ac sync-auth                 # Sync Claude Code credentials from macOS Keychain
 
 ## Customization
 
+Per-type files live under `types/<type>/`.
+
 | Change | Where |
 |---|---|
-| System packages | `apt-get install` block in `Dockerfile` |
-| Node version | `nvm install` lines in `Dockerfile` |
-| Services | `scripts/home/startup` (start before sshd) |
-| Ports | `ports:` in `type.yaml` |
-| Persistent storage | `mounts:` in `type.yaml` |
-| Container resources | `resources:` in `type.yaml` |
-| Shell config | `configs/home/.zshrc` and `.zshenv` |
-| Claude settings | `configs/home/.claude/settings.json` and `configs/home/.claude/CLAUDE.md` |
-| Personal shell additions | `.extras` (see below) |
+| System packages | `apt-get install` block in `types/<type>/Dockerfile` |
+| Runtime version | `nvm` lines (typescript) / `DOTNET_VERSION` ARG (dotnet) |
+| Services | `types/<type>/scripts/home/startup` (start before sshd) |
+| Ports | `ports:` in `types/<type>/type.yaml` |
+| Persistent storage | `mounts:` in `types/<type>/type.yaml` |
+| Container resources | `resources:` in `types/<type>/type.yaml` |
+| Shell config | `types/<type>/configs/home/.zshrc` and `.zshenv` |
+| Claude settings | `types/<type>/configs/home/.claude/settings.json` and `.claude/CLAUDE.md` |
+| Personal shell additions | `types/<type>/.extras` (see below) |
 
 ### Personal shell additions with `.extras`
 
