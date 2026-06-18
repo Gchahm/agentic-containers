@@ -762,11 +762,13 @@ do_upgrade_all() {
 
   # Pre-scan: collect metadata per container, group by type for rebuilding
   local scan_names=() scan_indices=() scan_running=() scan_types=()
-  declare -A types_to_build
+  local types_to_build=""
   for name in $containers; do
     local ctype
     ctype=$(container_type "$name")
-    types_to_build["$ctype"]=1
+    if [[ " ${types_to_build} " != *" ${ctype} "* ]]; then
+      types_to_build="${types_to_build} ${ctype}"
+    fi
 
     local ssh_base
     ssh_base=$(awk '/^ports:/,/^[a-z]/{ if (/name: ssh/) found=1; if (found && /host_base:/) { print $2; exit } }' "$(type_yaml "$ctype")")
@@ -797,7 +799,7 @@ do_upgrade_all() {
 
   # Build images per detected type
   echo ""
-  for t in "${!types_to_build[@]}"; do
+  for t in $types_to_build; do
     read -p "Rebuild ${t} image (--no-cache)? (Recommended) [Y/n]: " reply
     if [[ ! "$reply" =~ ^[Nn]$ ]]; then
       if ! do_build "$t" --no-cache; then
