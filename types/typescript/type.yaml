@@ -38,7 +38,7 @@ mounts:
     container: /home/agent/.zsh_history
   - name: nvim-config
     type: shared
-    container: /home/agent/.config/nvim
+    container: /home/agent/dotfiles
   - name: nvim-data
     type: shared
     container: /home/agent/.local/share/nvim

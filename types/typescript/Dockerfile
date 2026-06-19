@@ -120,6 +120,10 @@ RUN mkdir -p /home/agent/.npm-global /home/agent/.pnpm-store /home/agent/.zsh &&
     wget -qO- https://get.pnpm.io/install.sh | ENV="$HOME/.zshrc" SHELL="$(which zsh)" zsh - && \
     git clone https://github.com/sindresorhus/pure.git "$HOME/.zsh/pure"
 
+# Symlink nvim XDG config to the dotfiles repo's nvim subdir (repo is shared-mounted at ~/dotfiles)
+RUN mkdir -p /home/agent/.config && \
+    ln -s /home/agent/dotfiles/nvim /home/agent/.config/nvim
+
 ENV PATH="/home/agent/.nvm/default-bin:/home/agent/.npm-global/bin:${PATH}"
 
 # Install uv (Python package manager, useful for MCP tools)

@@ -68,7 +68,6 @@ RUN set -eux; \
     # RabbitMQ: enable management plugin, point data/log dirs at /data/rabbitmq
     rabbitmq-plugins enable --offline rabbitmq_management; \
     mkdir -p /data/rabbitmq/mnesia /data/rabbitmq/log /data/redis; \
-    chown -R agent:agent /data; \
     printf 'NODENAME=rabbit@localhost\nMNESIA_BASE=/data/rabbitmq/mnesia\nLOG_BASE=/data/rabbitmq/log\n' \
       > /etc/rabbitmq/rabbitmq-env.conf
 
@@ -149,6 +148,10 @@ WORKDIR /home/agent
 # (Docker auto-creates parent dirs of mounts as root, which blocks ~/.local/share writes)
 RUN mkdir -p /home/agent/.zsh /home/agent/.local/bin /home/agent/.local/share && \
     git clone https://github.com/sindresorhus/pure.git "$HOME/.zsh/pure"
+
+# Symlink nvim XDG config to the dotfiles repo's nvim subdir (repo is shared-mounted at ~/dotfiles)
+RUN mkdir -p /home/agent/.config && \
+    ln -s /home/agent/dotfiles/nvim /home/agent/.config/nvim
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 

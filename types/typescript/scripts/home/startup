@@ -81,6 +81,13 @@ else
     curl -fsSL https://claude.ai/install.sh | bash 2>&1 || echo "[startup] WARNING: Claude Code install failed" >&2
 fi
 
+# Seed dotfiles repo into shared mount on first start (so ~/.config/nvim symlink resolves)
+if [[ ! -d ~/dotfiles/.git ]]; then
+    echo "[startup] Cloning dotfiles into ~/dotfiles..."
+    git clone https://github.com/gchahm/nvim ~/dotfiles \
+        || echo "[startup] WARNING: dotfiles clone failed" >&2
+fi
+
 # Configure pnpm store
 echo "[startup] Configuring pnpm..."
 export PNPM_HOME="/home/agent/.local/share/pnpm"

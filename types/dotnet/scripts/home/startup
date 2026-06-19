@@ -85,6 +85,12 @@ else
     command -v claude >/dev/null 2>&1 || echo "[startup] WARNING: Claude Code install failed after retries" >&2
 fi
 
+# Seed dotfiles repo into shared mount on first start (so ~/.config/nvim symlink resolves)
+if [[ ! -d ~/dotfiles/.git ]]; then
+    echo "[startup] Cloning dotfiles into ~/dotfiles..."
+    git clone https://github.com/gchahm/nvim ~/dotfiles \
+        || echo "[startup] WARNING: dotfiles clone failed" >&2
+fi
 
 # Ensure correct SSH permissions
 chmod 700 ~/.ssh 2>/dev/null || true
