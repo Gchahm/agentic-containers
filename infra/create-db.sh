@@ -32,7 +32,8 @@ HOST="${PGHOST:-localhost}"
 PORT="${PGPORT:-5432}"
 ADMIN_USER="${PGUSER:-postgres}"
 ADMIN_PASSWORD="${PGPASSWORD:-}"
-SSL_MODE="${PGSSLMODE:-require}"
+SSL_MODE="${PGSSLMODE:-require}"  # for the script's OWN psql calls (against the local tunnel)
+RDS_HOSTNAME="${DB_RDS_HOSTNAME:-}"  # used in emitted URLs (sslmode=verify-full)
 
 usage() {
   cat <<EOF
@@ -50,7 +51,15 @@ Options:
   --port <p>             Default: 5432
   --admin-user <u>       Default: \$PGUSER or postgres
   --admin-password <p>   Default: \$PGPASSWORD (prefer infra/.env)
-  --sslmode <m>          Default: require
+  --sslmode <m>          For the script's OWN psql calls against the local
+                         tunnel. Default: require (no verification — fine for
+                         localhost). Set to verify-full only if your local
+                         /etc/hosts maps the RDS hostname to 127.0.0.1.
+  --rds-hostname <h>     RDS endpoint to embed in the emitted DATABASE_URL
+                         lines. Default: \$DB_RDS_HOSTNAME. Required for the
+                         emitted URLs to support sslmode=verify-full (the
+                         container is set up to resolve this to 127.0.0.1
+                         via --add-host)
   -h, --help
 
 Loads infra/.env automatically if present.
@@ -76,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --admin-user)      ADMIN_USER="$2"; shift 2 ;;
     --admin-password)  ADMIN_PASSWORD="$2"; shift 2 ;;
     --sslmode)         SSL_MODE="$2"; shift 2 ;;
+    --rds-hostname)    RDS_HOSTNAME="$2"; shift 2 ;;
     -h|--help)         usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -154,10 +164,20 @@ SQL
 GRANT ALL ON SCHEMA public TO "$ROLE";
 SQL
 
-  if [[ "$PASSWORD" == "(existing"* ]]; then
-    CONN="postgresql://${ROLE}:<existing-password>@${HOST}:${PORT}/${DB}?sslmode=${SSL_MODE}"
+  # Emitted URL uses the RDS hostname + sslmode=verify-full when DB_RDS_HOSTNAME
+  # is set, so apps inside containers (with --add-host) get full TLS verification.
+  # Falls back to localhost + sslmode=require when not set.
+  if [[ -n "$RDS_HOSTNAME" ]]; then
+    URL_HOST="$RDS_HOSTNAME"
+    URL_SSLMODE="verify-full"
   else
-    CONN="postgresql://${ROLE}:${PASSWORD}@${HOST}:${PORT}/${DB}?sslmode=${SSL_MODE}"
+    URL_HOST="$HOST"
+    URL_SSLMODE="require"
+  fi
+  if [[ "$PASSWORD" == "(existing"* ]]; then
+    CONN="postgresql://${ROLE}:<existing-password>@${URL_HOST}:${PORT}/${DB}?sslmode=${URL_SSLMODE}"
+  else
+    CONN="postgresql://${ROLE}:${PASSWORD}@${URL_HOST}:${PORT}/${DB}?sslmode=${URL_SSLMODE}"
   fi
 
   RESULTS+=("$env|$DB|$ROLE|$PASSWORD|$CONN")

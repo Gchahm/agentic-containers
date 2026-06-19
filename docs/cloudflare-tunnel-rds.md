@@ -172,8 +172,12 @@ In your repo's `.env` (gitignored), add:
 CF_ACCESS_CLIENT_ID=...
 CF_ACCESS_CLIENT_SECRET=...
 
-# RDS access hostname (from Part 1.2 — <subdomain>.<your-domain>)
+# Cloudflare-side hostname (from Part 1.2 — <subdomain>.<your-domain>)
 DB_TUNNEL_HOSTNAME=<subdomain>.<your-domain>
+
+# Real AWS RDS endpoint — the container maps this to 127.0.0.1 via --add-host
+# so apps can connect using the RDS hostname and pass sslmode=verify-full.
+DB_RDS_HOSTNAME=<db-identifier>.<random>.<region>.rds.amazonaws.com
 
 # Postgres connection details — these are per-app, see "App-level setup" below
 DB_HOST=localhost

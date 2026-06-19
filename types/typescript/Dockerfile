@@ -80,6 +80,20 @@ RUN set -eux; \
     dpkg -i /tmp/cloudflared.deb; \
     rm /tmp/cloudflared.deb
 
+# Install AWS RDS global CA bundle into the system trust store so apps can
+# verify RDS server certs (sslmode=verify-ca) when tunneled through cloudflared.
+# .NET / openssl / curl pick it up via update-ca-certificates; Node uses the
+# NODE_EXTRA_CA_CERTS env var set in the startup script.
+RUN curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+      -o /usr/local/share/ca-certificates/aws-rds-global-bundle.crt && \
+    update-ca-certificates
+
+# Expose the bundle path to every process in the container (not just SSH
+# sessions). Node's TLS layer auto-picks this up for fetch / https calls.
+# Postgres-specific connections use ?sslrootcert= or rely on the system
+# trust store updated above.
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/aws-rds-global-bundle.crt
+
 # Create agent user with targeted sudo permissions
 RUN useradd -m -s /bin/zsh -u 1000 agent && \
     echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sshd, /usr/bin/pg_ctlcluster, /usr/bin/pg_isready, /usr/bin/psql, /usr/bin/chown" \

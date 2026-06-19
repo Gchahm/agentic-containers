@@ -107,6 +107,11 @@ unset GITHUB_USERNAME GIT_NAME GIT_EMAIL GITHUB_OAUTH_TOKEN
 # --------------------------------------------------------------------
 if [[ -n "${DB_TUNNEL_HOSTNAME:-}" && -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
     echo "[startup] DB_TUNNEL_HOSTNAME=${DB_TUNNEL_HOSTNAME} — routing localhost:5432 via Cloudflare Access tunnel"
+    # Stop any pre-existing local PostgreSQL so it doesn't grab IPv6 ::1:5432
+    # while cloudflared owns 127.0.0.1:5432 (psql defaults to IPv6 first).
+    sudo /usr/bin/pg_ctlcluster 18 main stop >/dev/null 2>&1 || true
+    # NODE_EXTRA_CA_CERTS is set via Dockerfile ENV — available to every
+    # process in the container regardless of how it was spawned.
     nohup cloudflared access tcp \
         --hostname "$DB_TUNNEL_HOSTNAME" \
         --url localhost:5432 \

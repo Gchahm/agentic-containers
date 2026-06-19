@@ -232,6 +232,13 @@ do_create() {
   docker_args+=(-e "DB_TUNNEL_HOSTNAME=${DB_TUNNEL_HOSTNAME:-}")
   docker_args+=(-e "CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}")
   docker_args+=(-e "CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}")
+  # Real RDS hostname — when set, --add-host maps it to 127.0.0.1 so apps
+  # can connect via the cloudflared tunnel while still satisfying TLS
+  # hostname verification (sslmode=verify-full).
+  docker_args+=(-e "DB_RDS_HOSTNAME=${DB_RDS_HOSTNAME:-}")
+  if [[ -n "${DB_RDS_HOSTNAME:-}" ]]; then
+    docker_args+=(--add-host "${DB_RDS_HOSTNAME}:127.0.0.1")
+  fi
 
   # Mount host SSH private key into container for git/gh (read-only)
   if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}" ]]; then
@@ -737,6 +744,54 @@ do_tunnel_info() {
   fi
 }
 
+do_upgrade() {
+  local NAME=$1
+
+  if ! docker inspect "$NAME" >/dev/null 2>&1; then
+    echo "Error: container '$NAME' not found"
+    return 1
+  fi
+
+  local ctype index was_running
+  ctype=$(container_type "$NAME")
+
+  index=$(docker inspect --format '{{index .Config.Labels "ac_index"}}' "$NAME" 2>/dev/null || true)
+  if [[ -z "$index" || "$index" == "<no value>" ]]; then
+    index=""
+  fi
+
+  was_running=false
+  if docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true; then
+    was_running=true
+  fi
+
+  echo "Upgrading '$NAME' (type=$ctype${index:+, index=$index})..."
+
+  echo -n "  Stopping container... "
+  if [[ "$was_running" == "true" ]]; then
+    docker stop "$NAME" >/dev/null 2>&1 && echo "Done" || { echo "Failed"; return 1; }
+  else
+    echo "Already stopped"
+  fi
+
+  echo -n "  Removing container... "
+  docker rm "$NAME" >/dev/null 2>&1 && echo "Done" || { echo "Failed"; return 1; }
+
+  echo "  Creating container..."
+  if ! do_create "$ctype" "$NAME" "$index"; then
+    echo "Failed to create '$NAME'"
+    return 1
+  fi
+
+  if [[ "$was_running" != "true" ]]; then
+    echo "  Restoring stopped state..."
+    docker stop "$NAME" >/dev/null 2>&1 || true
+  fi
+
+  echo ""
+  echo "Upgraded '$NAME'. Connect with: ac shell $NAME"
+}
+
 do_upgrade_all() {
   local containers
   containers=$(docker ps -a --filter "label=${AC_LABEL}" --format "{{.Names}}")
@@ -910,6 +965,7 @@ Commands:
   build <type> [docker-args]       Build a type's image
   create <type> <name> [index]     Create a container of a type
   delete <name>                    Delete a container
+  upgrade <name>                   Recreate one container with the latest image (preserves data)
   upgrade-all                      Rebuild images and recreate all containers
   list                             List all containers
   types                            List available types
@@ -945,6 +1001,7 @@ case "${1:-}" in
   create)    do_create "${2:-}" "${3:-}" "${4:-}" ;;
   types)     list_types ;;
   delete)    [[ -z "${2:-}" ]] && { echo "Usage: ac delete <name>"; exit 1; }; do_delete "$2" ;;
+  upgrade)   [[ -z "${2:-}" ]] && { echo "Usage: ac upgrade <name>"; exit 1; }; do_upgrade "$2" ;;
   upgrade-all) do_upgrade_all ;;
   list)      do_list ;;
   start)     [[ -z "${2:-}" ]] && { echo "Usage: ac start <name>"; exit 1; }; docker start "$2" ;;
