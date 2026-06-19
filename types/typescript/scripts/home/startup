@@ -94,17 +94,33 @@ chmod 700 ~/.ssh 2>/dev/null || true
 unset GITHUB_USERNAME GIT_NAME GIT_EMAIL GITHUB_OAUTH_TOKEN
 
 # --------------------------------------------------------------------
-# PostgreSQL setup
+# PostgreSQL: either route localhost:5432 to RDS via Cloudflare Access
+# tunnel (when DB_TUNNEL_HOSTNAME + service token are set), or start the
+# local cluster as before. Apps always connect to localhost:5432.
 # --------------------------------------------------------------------
-echo "[startup] Starting PostgreSQL..."
-sudo chown -R postgres:postgres /var/lib/postgresql/18/main
-sudo /usr/bin/pg_ctlcluster 18 main start
+if [[ -n "${DB_TUNNEL_HOSTNAME:-}" && -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+    echo "[startup] DB_TUNNEL_HOSTNAME=${DB_TUNNEL_HOSTNAME} — routing localhost:5432 via Cloudflare Access tunnel"
+    nohup cloudflared access tcp \
+        --hostname "$DB_TUNNEL_HOSTNAME" \
+        --url localhost:5432 \
+        --service-token-id "$CF_ACCESS_CLIENT_ID" \
+        --service-token-secret "$CF_ACCESS_CLIENT_SECRET" \
+        > /tmp/cloudflared-rds.log 2>&1 &
+    echo "[startup] cloudflared access tunnel started (logs: /tmp/cloudflared-rds.log)"
+else
+    echo "[startup] Starting local PostgreSQL..."
+    sudo chown -R postgres:postgres /var/lib/postgresql/18/main
+    sudo /usr/bin/pg_ctlcluster 18 main start
 
-echo "[startup] Waiting for PostgreSQL to be ready..."
-timeout 30 bash -c 'until sudo pg_isready -h localhost >/dev/null 2>&1; do sleep 1; done'
+    echo "[startup] Waiting for PostgreSQL to be ready..."
+    timeout 30 bash -c 'until sudo pg_isready -h localhost >/dev/null 2>&1; do sleep 1; done'
 
-sudo psql -U postgres -c "ALTER USER postgres PASSWORD 'postgres';" 2>/dev/null || true
-echo "[startup] PostgreSQL is ready"
+    sudo psql -U postgres -c "ALTER USER postgres PASSWORD 'postgres';" 2>/dev/null || true
+    echo "[startup] PostgreSQL is ready"
+fi
+
+# Clear the service token from env now that cloudflared has it
+unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
 
 # --------------------------------------------------------------------
 # Cloudflare Tunnel (auto-start if token file present)

@@ -228,6 +228,10 @@ do_create() {
   docker_args+=(-e "RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER:-}")
   docker_args+=(-e "RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS:-}")
   docker_args+=(-e "DRAGONFLY_PASSWORD=${DRAGONFLY_PASSWORD:-}")
+  # Cloudflare Access tunnel to RDS (replaces local PostgreSQL when set)
+  docker_args+=(-e "DB_TUNNEL_HOSTNAME=${DB_TUNNEL_HOSTNAME:-}")
+  docker_args+=(-e "CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}")
+  docker_args+=(-e "CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}")
 
   # Mount host SSH private key into container for git/gh (read-only)
   if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}" ]]; then
