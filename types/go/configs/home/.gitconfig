@@ -1,0 +1,10 @@
+[user]
+	name = {GIT_NAME}
+	email = {GIT_EMAIL}
+[filter "lfs"]
+	required = true
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+[init]
+	defaultBranch = main

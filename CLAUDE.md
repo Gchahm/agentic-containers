@@ -22,8 +22,9 @@ types/
 Current types:
 - `typescript` — Node.js 22/24, pnpm, Playwright + Chromium
 - `dotnet` — .NET SDK 10 (override via `DOTNET_VERSION` env or `--build-arg`)
+- `go` — Go 1.25.0 on top of the typescript stack (Node 22/24, pnpm, Playwright)
 
-Both types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, SSH server, tmux, zsh + Pure, neovim (upstream), uv, cloudflared, rsync.
+All types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, SSH server, tmux, zsh + Pure, neovim (upstream), uv, cloudflared, rsync.
 
 ## How It Works
 
@@ -37,7 +38,7 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 ## Key Design Decisions
 
 - **Per-type Dockerfile, configs, scripts** — duplication keeps each type self-contained. No shared base today; refactor later if drift becomes painful.
-- **Single index pool across types** — `ac_index` is unique across the entire `ac_agent` label set. Per-type port ranges (typescript 2600/3000/5600, dotnet 2700/5000/5700) avoid clashes within an index.
+- **Single index pool across types** — `ac_index` is unique across the entire `ac_agent` label set. Per-type port ranges (typescript 2600/3000/5600, dotnet 2700/5000/5700, go 2800/8080/5900) avoid clashes within an index.
 - **Bind mount for workspace** — persists at `~/.config/ac/agents/<name>/workspace/`.
 - **Shared mounts for Claude + nvim** — all containers share at `~/.config/ac/shared/<name>/` so credentials, nvim config, and plugin data persist across types and containers.
 - **Named volumes** — language stores (pnpm, nuget), postgres data, zsh history survive container recreation.
