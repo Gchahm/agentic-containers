@@ -26,3 +26,11 @@ esac
 export GOPATH="$HOME/go"
 export GOMODCACHE="$HOME/go/pkg/mod"
 export PATH="/usr/local/go/bin:$GOPATH/bin:$PATH"
+
+# cmux - dropped in at runtime when cmux connects, so check per shell
+if [ -d "$HOME/.cmux/bin" ]; then
+  case ":$PATH:" in
+    *":$HOME/.cmux/bin:"*) ;;
+    *) export PATH="$HOME/.cmux/bin:$PATH" ;;
+  esac
+fi

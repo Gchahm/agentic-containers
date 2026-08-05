@@ -21,3 +21,11 @@ case ":$PATH:" in
   *":$PNPM_HOME/bin:"*) ;;
   *) export PATH="$PNPM_HOME/bin:$PATH" ;;
 esac
+
+# cmux - dropped in at runtime when cmux connects, so check per shell
+if [ -d "$HOME/.cmux/bin" ]; then
+  case ":$PATH:" in
+    *":$HOME/.cmux/bin:"*) ;;
+    *) export PATH="$HOME/.cmux/bin:$PATH" ;;
+  esac
+fi
