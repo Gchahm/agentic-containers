@@ -106,6 +106,16 @@ RUN set -eux; \
     /tmp/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin; \
     rm -r /tmp/awscliv2.zip /tmp/aws
 
+# Install Terraform (>= 1.10 required for S3 state locking via use_lockfile)
+ARG TERRAFORM_VERSION=1.15.8
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${arch}.zip" \
+      -o /tmp/terraform.zip; \
+    unzip -q /tmp/terraform.zip -d /tmp/terraform; \
+    install -m 755 /tmp/terraform/terraform /usr/local/bin/terraform; \
+    rm -r /tmp/terraform.zip /tmp/terraform
+
 # Install AWS RDS global CA bundle into the system trust store so apps can
 # verify RDS server certs (sslmode=verify-ca) when tunneled through cloudflared.
 # .NET / openssl / curl pick it up via update-ca-certificates; any Node tools

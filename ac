@@ -83,7 +83,7 @@ do_build() {
     # shellcheck disable=SC1091
     source "${AC_DIR}/.env"
     set +a
-    for v in DOTNET_VERSION DEBIAN_VERSION; do
+    for v in DOTNET_VERSION DEBIAN_VERSION TERRAFORM_VERSION; do
       [[ -n "${!v:-}" ]] && build_args+=(--build-arg "${v}=${!v}")
     done
   fi
