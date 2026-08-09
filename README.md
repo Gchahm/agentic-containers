@@ -155,7 +155,7 @@ Shared by all types:
 - Debian (slim) base
 - PostgreSQL 18 (localhost:5432, user: `postgres`, password: `postgres`)
 - Claude Code CLI
-- GitHub CLI, tmux, zsh + Pure prompt, neovim (upstream), uv, jq, rsync, cloudflared
+- GitHub CLI, AWS CLI v2, tmux, zsh + Pure prompt, neovim (upstream), uv, jq, rsync, cloudflared
 
 Type-specific:
 - **typescript**: Node.js 22 (default) + 24 via nvm, pnpm/npm, Playwright + Chromium
@@ -165,6 +165,7 @@ Type-specific:
 
 - **Workspace** — bind-mounted at `~/.config/ac/agents/<name>/workspace/`
 - **Claude credentials** — shared across containers at `~/.config/ac/shared/claude/`
+- **AWS config/credentials** — shared across containers at `~/.config/ac/shared/aws/` (mounted as `~/.aws`)
 - **Named volumes** — npm-global, pnpm-store, PostgreSQL data, and zsh history survive container recreation
 
 ## Customization

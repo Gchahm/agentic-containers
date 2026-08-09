@@ -21,6 +21,9 @@ mounts:
   - name: cloudflared
     type: bind
     container: /home/agent/.cloudflared
+  - name: aws
+    type: shared
+    container: /home/agent/.aws
   - name: claude
     type: shared
     container: /home/agent/.claude
