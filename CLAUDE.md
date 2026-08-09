@@ -24,7 +24,7 @@ Current types:
 - `dotnet` — .NET SDK 10 (override via `DOTNET_VERSION` env or `--build-arg`)
 - `go` — Go 1.25.0 on top of the typescript stack (Node 22/24, pnpm, Playwright)
 
-All types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, AWS CLI v2, SSH server, tmux, zsh + Pure, neovim (upstream), uv, cloudflared, rsync.
+All types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, AWS CLI v2, Terraform, SSH server, tmux, zsh + Pure, neovim (upstream), uv, cloudflared, rsync.
 
 ## How It Works
 
@@ -47,7 +47,7 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 ## Modifying a Type
 
 - **Add system packages** — edit `apt-get install` in `types/<type>/Dockerfile`
-- **Change runtime version** — typescript: nvm lines; dotnet: `DOTNET_VERSION` ARG / .env
+- **Change runtime version** — typescript: nvm lines; dotnet: `DOTNET_VERSION` ARG / .env; terraform (all types): `TERRAFORM_VERSION` ARG / .env
 - **Add services** — edit `types/<type>/scripts/home/startup` (start before sshd exec)
 - **Add ports** — `ports:` in `types/<type>/type.yaml`
 - **Add persistent storage** — `mounts:` in `types/<type>/type.yaml`
