@@ -110,8 +110,13 @@ RUN set -eux; \
 # all satisfied by trixie, and the repo holds nothing but mongodb-* packages
 # so no Ubuntu libraries can be pulled in.
 ARG MONGODB_VERSION=8.2
+# MongoDB stopped publishing a per-release key after 8.0: server-8.1/8.2/8.3.asc
+# are all 404. The 8.2 repo is still signed by the "MongoDB 8.0 Release Signing
+# Key" (4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05), so the key version is pinned
+# separately from the repo version. Bump only when a newer key actually ships.
+ARG MONGODB_KEY_VERSION=8.0
 RUN set -eux; \
-    curl -fsSL "https://www.mongodb.org/static/pgp/server-${MONGODB_VERSION}.asc" | \
+    curl -fsSL "https://www.mongodb.org/static/pgp/server-${MONGODB_KEY_VERSION}.asc" | \
       gpg --dearmor -o /usr/share/keyrings/mongodb-server.gpg; \
     echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/${MONGODB_VERSION} multiverse" \
       > /etc/apt/sources.list.d/mongodb-org.list; \
