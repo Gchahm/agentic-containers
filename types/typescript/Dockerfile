@@ -103,6 +103,26 @@ RUN set -eux; \
     install -m 755 /tmp/terraform/terraform /usr/local/bin/terraform; \
     rm -r /tmp/terraform.zip /tmp/terraform
 
+# Install MongoDB (server, shell, database tools).
+# The Ubuntu noble repo is used for BOTH arches deliberately: MongoDB ships no
+# arm64 build in its Debian repo, and its trixie suite carries only mongosh.
+# The noble packages depend solely on libc6/libcurl4t64/libssl3t64/libgcc-s1,
+# all satisfied by trixie, and the repo holds nothing but mongodb-* packages
+# so no Ubuntu libraries can be pulled in.
+ARG MONGODB_VERSION=8.2
+RUN set -eux; \
+    curl -fsSL "https://www.mongodb.org/static/pgp/server-${MONGODB_VERSION}.asc" | \
+      gpg --dearmor -o /usr/share/keyrings/mongodb-server.gpg; \
+    echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/${MONGODB_VERSION} multiverse" \
+      > /etc/apt/sources.list.d/mongodb-org.list; \
+    apt-get update && apt-get install -y \
+      mongodb-org-server mongodb-mongosh mongodb-database-tools; \
+    rm -rf /var/lib/apt/lists/*; \
+    # mongod runs as the agent user (no systemd here), so hand it the data and
+    # log dirs. uid/gid 1000 is the agent user, created further down.
+    mkdir -p /var/lib/mongodb /var/log/mongodb; \
+    chown -R 1000:1000 /var/lib/mongodb /var/log/mongodb
+
 # Install AWS RDS global CA bundle into the system trust store so apps can
 # verify RDS server certs (sslmode=verify-ca) when tunneled through cloudflared.
 # .NET / openssl / curl pick it up via update-ca-certificates; Node uses the
@@ -216,6 +236,6 @@ COPY --chown=agent:agent scripts/home/. /usr/local/bin/
 
 WORKDIR /home/agent/workspace
 
-EXPOSE 22 3000 5432
+EXPOSE 22 3000 5432 27017
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/startup"]

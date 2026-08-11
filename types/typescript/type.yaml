@@ -1,5 +1,5 @@
 name: typescript
-description: 'TypeScript/Node.js development container with PostgreSQL'
+description: 'TypeScript/Node.js development container with PostgreSQL and MongoDB'
 image_name: ts-agent
 label: ac_agent
 
@@ -13,6 +13,9 @@ ports:
   - name: postgres
     host_base: 5600
     container: 5432
+  - name: mongodb
+    host_base: 27000
+    container: 27017
 
 mounts:
   - name: workspace
@@ -36,6 +39,9 @@ mounts:
   - name: postgres
     type: volume
     container: /var/lib/postgresql/18/main
+  - name: mongodb
+    type: volume
+    container: /var/lib/mongodb
   - name: zsh-history
     type: volume
     container: /home/agent/.zsh_history

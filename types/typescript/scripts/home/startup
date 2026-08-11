@@ -135,6 +135,33 @@ fi
 unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
 
 # --------------------------------------------------------------------
+# MongoDB
+# --------------------------------------------------------------------
+echo "[startup] Starting MongoDB..."
+# The data dir is a named volume -- root-owned on first mount
+if [[ "$(stat -c '%U' /var/lib/mongodb 2>/dev/null)" != "agent" ]]; then
+    echo "[startup] Fixing ownership: /var/lib/mongodb"
+    sudo chown -R agent:agent /var/lib/mongodb
+fi
+
+# --fork returns only once mongod is accepting connections, so no wait loop.
+# WiredTiger would otherwise reserve ~50% of the container's memory for cache;
+# 0.5G leaves room for Postgres, Node builds and Chromium in the same 4g box.
+if mongod --dbpath /var/lib/mongodb \
+          --logpath /var/log/mongodb/mongod.log --logappend \
+          --wiredTigerCacheSizeGB 0.5 \
+          --bind_ip_all --auth --fork >/dev/null; then
+    # Seed the root user on first boot. MongoDB's localhost exception permits
+    # this only while no users exist, so it is a no-op on every later boot.
+    mongosh --quiet --eval \
+        'db.getSiblingDB("admin").createUser({user:"mongo",pwd:"mongo",roles:[{role:"root",db:"admin"}]})' \
+        >/dev/null 2>&1 || true
+    echo "[startup] MongoDB is ready"
+else
+    echo "[startup] WARNING: MongoDB failed to start (logs: /var/log/mongodb/mongod.log)" >&2
+fi
+
+# --------------------------------------------------------------------
 # Cloudflare Tunnel (auto-start if token file present)
 # --------------------------------------------------------------------
 if [[ -f ~/.cloudflared/token ]]; then
