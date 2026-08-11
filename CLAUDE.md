@@ -47,7 +47,7 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 ## Modifying a Type
 
 - **Add system packages** — edit `apt-get install` in `types/<type>/Dockerfile`
-- **Change runtime version** — typescript: nvm lines, `MONGODB_VERSION` ARG; dotnet: `DOTNET_VERSION` ARG / .env; terraform (all types): `TERRAFORM_VERSION` ARG / .env
+- **Change runtime version** — typescript: nvm lines, `MONGODB_VERSION` ARG (with `MONGODB_KEY_VERSION` for the repo signing key, which lags the release); dotnet: `DOTNET_VERSION` ARG / .env; terraform (all types): `TERRAFORM_VERSION` ARG / .env
 - **Add services** — edit `types/<type>/scripts/home/startup` (start before sshd exec)
 - **Add ports** — `ports:` in `types/<type>/type.yaml`
 - **Add persistent storage** — `mounts:` in `types/<type>/type.yaml`
