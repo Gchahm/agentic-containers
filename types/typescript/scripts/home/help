@@ -15,4 +15,8 @@ PostgreSQL:
   Port: 5432
   User: postgres
   Password: postgres
+
+MongoDB:
+  URI: mongodb://mongo:mongo@localhost:27017/?authSource=admin
+  Shell: mongosh -u mongo -p mongo --authenticationDatabase admin
 EOF
