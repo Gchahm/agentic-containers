@@ -14,6 +14,7 @@ types/
     type.yaml              Container config (ports, mounts, resources, required env)
     configs/home/          Files copied into /home/agent/ at build time
       .zshenv .zshrc .gitconfig .ssh/config .config/gh/ .claude/ .tmux.conf
+      .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml (vendored, see below)
     scripts/home/          Scripts available inside container
       startup help yolo
     .extras                Optional, gitignored — user shell customizations
@@ -54,6 +55,7 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 - **Change container resources** — `resources:` in `types/<type>/type.yaml`
 - **Customize shell** — `types/<type>/configs/home/.zshrc` and `.zshenv`
 - **Customize Claude** — `types/<type>/configs/home/.claude/settings.json` and `.claude/CLAUDE.md`
+- **Change guardrails** — `types/<type>/configs/home/.claude/hooks/damage-control/` (see below)
 
 ## Adding a New Type
 
@@ -61,3 +63,17 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 2. Edit `types/<newtype>/type.yaml` — set `name`, `image_name`, port `host_base`s (unique across types)
 3. Edit `types/<newtype>/Dockerfile` — add `LABEL ac_type=<newtype>`, install the toolchain you need
 4. `ac build <newtype>` then `ac create <newtype> <name>`
+
+## Guardrails (damage control hooks)
+
+`PreToolUse` hooks that block destructive Bash/Edit/Write calls. They live in this
+repo at `types/<type>/configs/home/.claude/hooks/damage-control/` — three Python
+hook scripts plus `patterns.yaml` — and reach the container through the normal
+config copy (`configs/home/.` → `/home/agent/`, `configs/home/.claude` →
+`/opt/ac/claude`, which `startup` syncs into `~/.claude` on every boot).
+`settings.json` wires them up via `uv run .../<tool>-tool-damage-control.py`.
+
+Originally vendored from [Gchahm/claude-code-damage-control](https://github.com/Gchahm/claude-code-damage-control)
+(`.claude/skills/damage-control/`); the build no longer clones it. Edit the files
+here to change behaviour — most tuning is `patterns.yaml`. Keep the copies in the
+three types in sync, and keep the `.py` files executable.
