@@ -8,15 +8,22 @@ Standalone Docker container manager for isolated dev environments. Ships with Cl
 ac                         CLI script (bash) — manages containers via Docker
 install                    Symlinks ac to /usr/local/bin
 .env.example               Environment variable template (user copies to .env)
+.dockerignore              Trims the build context (the repo root — see How It Works)
+shared/                    Copied into every type's image first
+  configs/home/            → /home/agent/ (.claude/ also staged to /opt/ac/claude)
+    .zshrc .gitconfig .ssh/config .config/gh/ .tmux.conf .claude.json
+    .claude/settings.json .claude/statusline.sh .claude/hooks/
+    .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml (see below)
+  scripts/home/            → /usr/local/bin/
+    yolo
 types/
   <type>/
     Dockerfile             Image definition for this type
     type.yaml              Container config (ports, mounts, resources, required env)
-    configs/home/          Files copied into /home/agent/ at build time
-      .zshenv .zshrc .gitconfig .ssh/config .config/gh/ .claude/ .tmux.conf
-      .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml (vendored, see below)
-    scripts/home/          Scripts available inside container
-      startup help yolo
+    configs/home/          Copied over shared/ — only what differs per type
+      .zshenv .claude/CLAUDE.md
+    scripts/home/          Copied over shared/ — only what differs per type
+      startup help
     .extras                Optional, gitignored — user shell customizations
 ```
 
@@ -29,7 +36,7 @@ All types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, A
 
 ## How It Works
 
-1. `ac build <type>` — builds the type's Docker image (e.g., `ts-agent`, `dotnet-agent`).
+1. `ac build <type>` — builds the type's Docker image (e.g., `ts-agent`, `dotnet-agent`). The build context is the **repo root** with `-f types/<type>/Dockerfile`, so a Dockerfile can COPY from both `shared/` and `types/<type>/`; `.dockerignore` keeps the context small.
 2. `ac create <type> <name> [index]` — runs a container with port mappings derived from the type's `type.yaml` (base + index), mounts volumes, passes env vars from `.env`, installs SSH key, configures host SSH config. Labels the container with `ac_type=<type>`.
 3. Container startup — configures git auth, PostgreSQL, Claude Code, optional cloudflared, then `exec sshd`.
 4. User connects via `ac shell`, `ac open` (VS Code), or `ssh <name>` (config installed automatically).
@@ -38,7 +45,7 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 
 ## Key Design Decisions
 
-- **Per-type Dockerfile, configs, scripts** — duplication keeps each type self-contained. No shared base today; refactor later if drift becomes painful.
+- **Shared configs + per-type overrides** — anything identical across types lives in `shared/`; `types/<type>/configs` and `types/<type>/scripts` hold only files that genuinely differ (today `.zshenv`, `.claude/CLAUDE.md`, `startup`, `help`). Each Dockerfile copies `shared/` first, then its own dir on top, so a per-type file wins by overwriting. Dockerfiles stay per-type — that's where the real divergence is.
 - **Single index pool across types** — `ac_index` is unique across the entire `ac_agent` label set. Per-type port ranges (typescript 2600/3000/5600/27000, dotnet 2700/5000/5700, go 2800/8080/5900) avoid clashes within an index.
 - **Bind mount for workspace** — persists at `~/.config/ac/agents/<name>/workspace/`.
 - **Shared mounts for Claude + nvim + AWS** — all containers share at `~/.config/ac/shared/<name>/` so credentials, nvim config, and plugin data persist across types and containers. `~/.aws` is shared, so one `aws configure` / SSO login covers every container.
@@ -53,27 +60,30 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 - **Add ports** — `ports:` in `types/<type>/type.yaml`
 - **Add persistent storage** — `mounts:` in `types/<type>/type.yaml`
 - **Change container resources** — `resources:` in `types/<type>/type.yaml`
-- **Customize shell** — `types/<type>/configs/home/.zshrc` and `.zshenv`
-- **Customize Claude** — `types/<type>/configs/home/.claude/settings.json` and `.claude/CLAUDE.md`
-- **Change guardrails** — `types/<type>/configs/home/.claude/hooks/damage-control/` (see below)
+- **Customize shell** — `shared/configs/home/.zshrc` (all types) or `types/<type>/configs/home/.zshenv` (one type)
+- **Customize Claude** — `shared/configs/home/.claude/settings.json` (all types) or `types/<type>/configs/home/.claude/CLAUDE.md` (one type)
+- **Change guardrails** — `shared/configs/home/.claude/hooks/damage-control/` (see below)
+
+To make a shared file differ for one type, copy it into that type's `configs/home/`
+or `scripts/home/` at the same relative path — the per-type COPY runs second and wins.
 
 ## Adding a New Type
 
 1. Copy an existing type dir: `cp -r types/typescript types/<newtype>`
 2. Edit `types/<newtype>/type.yaml` — set `name`, `image_name`, port `host_base`s (unique across types)
-3. Edit `types/<newtype>/Dockerfile` — add `LABEL ac_type=<newtype>`, install the toolchain you need
+3. Edit `types/<newtype>/Dockerfile` — add `LABEL ac_type=<newtype>`, install the toolchain you need, and repoint the `COPY … types/typescript/…` lines at `types/<newtype>/`
 4. `ac build <newtype>` then `ac create <newtype> <name>`
 
 ## Guardrails (damage control hooks)
 
 `PreToolUse` hooks that block destructive Bash/Edit/Write calls. They live in this
-repo at `types/<type>/configs/home/.claude/hooks/damage-control/` — three Python
-hook scripts plus `patterns.yaml` — and reach the container through the normal
-config copy (`configs/home/.` → `/home/agent/`, `configs/home/.claude` →
-`/opt/ac/claude`, which `startup` syncs into `~/.claude` on every boot).
-`settings.json` wires them up via `uv run .../<tool>-tool-damage-control.py`.
+repo at `shared/configs/home/.claude/hooks/damage-control/` — three Python hook
+scripts plus `patterns.yaml` — and reach the container through the normal config
+copy (`configs/home/.` → `/home/agent/`, `configs/home/.claude` → `/opt/ac/claude`,
+which `startup` syncs into `~/.claude` on every boot). `settings.json` wires them
+up via `uv run .../<tool>-tool-damage-control.py`.
 
 Originally vendored from [Gchahm/claude-code-damage-control](https://github.com/Gchahm/claude-code-damage-control)
 (`.claude/skills/damage-control/`); the build no longer clones it. Edit the files
-here to change behaviour — most tuning is `patterns.yaml`. Keep the copies in the
-three types in sync, and keep the `.py` files executable.
+here to change behaviour — most tuning is `patterns.yaml`. Keep the `.py` files
+executable.

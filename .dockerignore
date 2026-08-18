@@ -1,0 +1,14 @@
+# Build context is the repo root (see `do_build` in ac). Keep it to what the
+# Dockerfiles actually COPY: shared/ and types/<type>/.
+# Note: types/*/.extras IS copied into the image, so it must not be ignored.
+.git
+.gitignore
+.idea
+.env
+.env.*
+docs
+infra
+README.md
+CLAUDE.md
+install
+ac

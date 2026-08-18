@@ -91,7 +91,9 @@ do_build() {
   local image
   image=$(get_image_name "$TYPE")
   echo "Building ${image} image (type: ${TYPE})..."
-  docker build ${build_args[@]+"${build_args[@]}"} "$@" -t "$image" "$(type_dir "$TYPE")"
+  # Build context is the repo root so Dockerfiles can COPY from shared/
+  docker build ${build_args[@]+"${build_args[@]}"} "$@" \
+    -f "$(type_dir "$TYPE")/Dockerfile" -t "$image" "${AC_DIR}"
 }
 
 do_create() {

@@ -170,7 +170,7 @@ Type-specific:
 
 ## Customization
 
-Per-type files live under `types/<type>/`.
+Files identical across all types live under `shared/`; `types/<type>/` holds the Dockerfile plus the few files that differ. Each image copies `shared/` first, then its type dir on top — so a per-type file overrides the shared one.
 
 | Change | Where |
 |---|---|
@@ -180,16 +180,17 @@ Per-type files live under `types/<type>/`.
 | Ports | `ports:` in `types/<type>/type.yaml` |
 | Persistent storage | `mounts:` in `types/<type>/type.yaml` |
 | Container resources | `resources:` in `types/<type>/type.yaml` |
-| Shell config | `types/<type>/configs/home/.zshrc` and `.zshenv` |
-| Claude settings | `types/<type>/configs/home/.claude/settings.json` and `.claude/CLAUDE.md` |
+| Guardrail hooks | `shared/configs/home/.claude/hooks/damage-control/` |
+| Shell config | `shared/configs/home/.zshrc` (all types), `types/<type>/configs/home/.zshenv` (one type) |
+| Claude settings | `shared/configs/home/.claude/settings.json` (all types), `types/<type>/configs/home/.claude/CLAUDE.md` (one type) |
 | Personal shell additions | `types/<type>/.extras` (see below) |
 
 ### Personal shell additions with `.extras`
 
-Create a `.extras` file in the repo root for shell customizations you don't want to commit (it's gitignored). It's copied into the container at build time and sourced by `.zshrc` on every interactive shell.
+Create a `types/<type>/.extras` file for shell customizations you don't want to commit (it's gitignored). It's copied into the container at build time and sourced by `.zshrc` on every interactive shell.
 
 ```bash
-touch .extras
+touch types/typescript/.extras
 ```
 
 Example contents:

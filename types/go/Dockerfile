@@ -207,18 +207,21 @@ RUN . "$NVM_DIR/nvm.sh" && nvm use 22 && \
     mkdir -p /opt/ac/claude/skills && \
     cp -r /home/agent/.claude/skills/. /opt/ac/claude/skills/
 
-# Copy all home configs (shell, git, ssh, gh, claude, tmux)
-COPY --chown=agent:agent configs/home/. /home/agent/
+# Copy home configs (shell, git, ssh, gh, claude, tmux) — shared first, type overrides on top
+COPY --chown=agent:agent shared/configs/home/. /home/agent/
+COPY --chown=agent:agent types/go/configs/home/. /home/agent/
 RUN chmod 700 /home/agent/.ssh && chmod 600 /home/agent/.ssh/config
 
 # Stage Claude configs (copied at startup due to bind mount)
-COPY --chown=agent:agent configs/home/.claude /opt/ac/claude
+COPY --chown=agent:agent shared/configs/home/.claude /opt/ac/claude
+COPY --chown=agent:agent types/go/configs/home/.claude /opt/ac/claude
 
 # Copy .extras if it exists
-COPY --chown=agent:agent .extra[s] /home/agent/
+COPY --chown=agent:agent types/go/.extra[s] /home/agent/
 
 # Copy user scripts (startup, help, yolo)
-COPY --chown=agent:agent scripts/home/. /usr/local/bin/
+COPY --chown=agent:agent shared/scripts/home/. /usr/local/bin/
+COPY --chown=agent:agent types/go/scripts/home/. /usr/local/bin/
 
 WORKDIR /home/agent/workspace
 
