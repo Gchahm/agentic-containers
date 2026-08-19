@@ -98,8 +98,9 @@ the blast radius is small. To turn them back on, add to
 ]
 ```
 
-`patterns.yaml` is the tuning surface when they are on. Env files sit in
-`readOnlyPaths`, not `zeroAccessPaths` — readable, still not writable.
+`patterns.yaml` is the tuning surface when they are on. Env files appear in
+neither `zeroAccessPaths` nor `readOnlyPaths` — agents are expected to read and
+edit them, since these containers hold local dev config, not production secrets.
 
 Originally vendored from [Gchahm/claude-code-damage-control](https://github.com/Gchahm/claude-code-damage-control)
 (`.claude/skills/damage-control/`); the build no longer clones it. Keep the `.py`
