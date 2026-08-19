@@ -13,8 +13,7 @@ shared/                    Copied into every type's image first
   configs/home/            → /home/agent/ (.claude/ also staged to /opt/ac/claude)
     .zshrc .gitconfig .ssh/config .config/gh/ .tmux.conf .claude.json
     .claude/settings.json .claude/statusline.sh .claude/hooks/
-    .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml — shipped
-                                   but NOT wired up by default (see below)
+    .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml (see below)
   scripts/home/            → /usr/local/bin/
     yolo
 types/
@@ -81,27 +80,24 @@ or `scripts/home/` at the same relative path — the per-type COPY runs second a
 repo at `shared/configs/home/.claude/hooks/damage-control/` — three Python hook
 scripts plus `patterns.yaml` — and reach the container through the normal config
 copy (`configs/home/.` → `/home/agent/`, `configs/home/.claude` → `/opt/ac/claude`,
-which `startup` syncs into `~/.claude` on every boot).
+which `startup` syncs into `~/.claude` on every boot). `settings.json` wires them
+up via `uv run .../<tool>-tool-damage-control.py`.
 
-**They are shipped but not enabled.** `settings.json` no longer registers them:
-every Bash/Edit/Write call paid for a `uv run` subprocess, and the false positives
-(any command whose text merely mentioned a blocked path) cost more than the hooks
-caught. The containers are disposable and the host filesystem is not mounted, so
-the blast radius is small. To turn them back on, add to
-`shared/configs/home/.claude/settings.json`:
+Cost, measured warm: ~48 ms before each Bash call, ~32 ms before each Edit/Write
+(~13 ms of it is `uv` startup, most of the rest is re-parsing `patterns.yaml` and
+recompiling its ~120 regexes every call). The first call in a fresh container is
+seconds, since `uv` downloads PyYAML — `~/.cache/uv` is not a named volume, so
+that repeats on every container recreation and needs network.
 
-```json
-"PreToolUse": [
-  {"matcher": "Bash",  "hooks": [{"type": "command", "command": "uv run /home/agent/.claude/hooks/damage-control/bash-tool-damage-control.py",  "timeout": 5}]},
-  {"matcher": "Edit",  "hooks": [{"type": "command", "command": "uv run /home/agent/.claude/hooks/damage-control/edit-tool-damage-control.py",  "timeout": 5}]},
-  {"matcher": "Write", "hooks": [{"type": "command", "command": "uv run /home/agent/.claude/hooks/damage-control/write-tool-damage-control.py", "timeout": 5}]}
-]
-```
-
-`patterns.yaml` is the tuning surface when they are on. Env files appear in
-neither `zeroAccessPaths` nor `readOnlyPaths` — agents are expected to read and
-edit them, since these containers hold local dev config, not production secrets.
+`patterns.yaml` is the tuning surface. Note how the Bash hook matches
+`zeroAccessPaths`: a plain substring search over the whole command, so a literal
+entry blocks any command whose *text* merely contains it — a commit message, a PR
+body, a grep. Prefer globs, and keep that list to things worth the false
+positives. Env files are in neither `zeroAccessPaths` nor `readOnlyPaths` — agents
+are expected to read and edit them, since these containers hold local dev config,
+not production secrets.
 
 Originally vendored from [Gchahm/claude-code-damage-control](https://github.com/Gchahm/claude-code-damage-control)
-(`.claude/skills/damage-control/`); the build no longer clones it. Keep the `.py`
-files executable.
+(`.claude/skills/damage-control/`); the build no longer clones it. Edit the files
+here to change behaviour — most tuning is `patterns.yaml`. Keep the `.py` files
+executable.
