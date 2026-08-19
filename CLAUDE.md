@@ -13,7 +13,8 @@ shared/                    Copied into every type's image first
   configs/home/            → /home/agent/ (.claude/ also staged to /opt/ac/claude)
     .zshrc .gitconfig .ssh/config .config/gh/ .tmux.conf .claude.json
     .claude/settings.json .claude/statusline.sh .claude/hooks/
-    .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml (see below)
+    .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml — shipped
+                                   but NOT wired up by default (see below)
   scripts/home/            → /usr/local/bin/
     yolo
 types/
@@ -80,10 +81,26 @@ or `scripts/home/` at the same relative path — the per-type COPY runs second a
 repo at `shared/configs/home/.claude/hooks/damage-control/` — three Python hook
 scripts plus `patterns.yaml` — and reach the container through the normal config
 copy (`configs/home/.` → `/home/agent/`, `configs/home/.claude` → `/opt/ac/claude`,
-which `startup` syncs into `~/.claude` on every boot). `settings.json` wires them
-up via `uv run .../<tool>-tool-damage-control.py`.
+which `startup` syncs into `~/.claude` on every boot).
+
+**They are shipped but not enabled.** `settings.json` no longer registers them:
+every Bash/Edit/Write call paid for a `uv run` subprocess, and the false positives
+(any command whose text merely mentioned a blocked path) cost more than the hooks
+caught. The containers are disposable and the host filesystem is not mounted, so
+the blast radius is small. To turn them back on, add to
+`shared/configs/home/.claude/settings.json`:
+
+```json
+"PreToolUse": [
+  {"matcher": "Bash",  "hooks": [{"type": "command", "command": "uv run /home/agent/.claude/hooks/damage-control/bash-tool-damage-control.py",  "timeout": 5}]},
+  {"matcher": "Edit",  "hooks": [{"type": "command", "command": "uv run /home/agent/.claude/hooks/damage-control/edit-tool-damage-control.py",  "timeout": 5}]},
+  {"matcher": "Write", "hooks": [{"type": "command", "command": "uv run /home/agent/.claude/hooks/damage-control/write-tool-damage-control.py", "timeout": 5}]}
+]
+```
+
+`patterns.yaml` is the tuning surface when they are on. Env files sit in
+`readOnlyPaths`, not `zeroAccessPaths` — readable, still not writable.
 
 Originally vendored from [Gchahm/claude-code-damage-control](https://github.com/Gchahm/claude-code-damage-control)
-(`.claude/skills/damage-control/`); the build no longer clones it. Edit the files
-here to change behaviour — most tuning is `patterns.yaml`. Keep the `.py` files
-executable.
+(`.claude/skills/damage-control/`); the build no longer clones it. Keep the `.py`
+files executable.

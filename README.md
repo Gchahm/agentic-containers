@@ -180,7 +180,7 @@ Files identical across all types live under `shared/`; `types/<type>/` holds the
 | Ports | `ports:` in `types/<type>/type.yaml` |
 | Persistent storage | `mounts:` in `types/<type>/type.yaml` |
 | Container resources | `resources:` in `types/<type>/type.yaml` |
-| Guardrail hooks | `shared/configs/home/.claude/hooks/damage-control/` |
+| Guardrail hooks (shipped, off by default) | `shared/configs/home/.claude/hooks/damage-control/` — see `CLAUDE.md` to re-enable |
 | Shell config | `shared/configs/home/.zshrc` (all types), `types/<type>/configs/home/.zshenv` (one type) |
 | Claude settings | `shared/configs/home/.claude/settings.json` (all types), `types/<type>/configs/home/.claude/CLAUDE.md` (one type) |
 | Personal shell additions | `types/<type>/.extras` (see below) |

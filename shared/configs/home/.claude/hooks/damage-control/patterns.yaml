@@ -380,13 +380,9 @@ bashToolPatterns:
 # Enforced by: Bash, Edit, Write tools
 # Supports glob patterns: *.pem, .env*, *-credentials.json
 zeroAccessPaths:
-  # ---------------------------------------------------------------------------
-  # ENVIRONMENT FILES (HIGH RISK - contain secrets)
-  # ---------------------------------------------------------------------------
-  - ".env"
-  - ".env.*"
-  - ".env*.local"
-  - "*.env"
+  # Env files are NOT listed here on purpose — reading them is routine when
+  # debugging a container, and a literal ".env" entry also blocked any command
+  # whose text merely contained it. They are read-only instead (see below).
 
   # ---------------------------------------------------------------------------
   # SSH KEYS AND CONFIG
@@ -473,6 +469,13 @@ zeroAccessPaths:
 # Enforced by: Bash, Edit, Write tools
 # Supports glob patterns: *.lock, *.min.js
 readOnlyPaths:
+  # ---------------------------------------------------------------------------
+  # ENVIRONMENT FILES - readable (they hold local dev config), not writable
+  # ---------------------------------------------------------------------------
+  - ".env.*"
+  - ".env*.local"
+  - "*.env"
+
   # ---------------------------------------------------------------------------
   # SYSTEM DIRECTORIES
   # ---------------------------------------------------------------------------
