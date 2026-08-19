@@ -83,6 +83,20 @@ copy (`configs/home/.` → `/home/agent/`, `configs/home/.claude` → `/opt/ac/c
 which `startup` syncs into `~/.claude` on every boot). `settings.json` wires them
 up via `uv run .../<tool>-tool-damage-control.py`.
 
+Cost, measured warm: ~48 ms before each Bash call, ~32 ms before each Edit/Write
+(~13 ms of it is `uv` startup, most of the rest is re-parsing `patterns.yaml` and
+recompiling its ~120 regexes every call). The first call in a fresh container is
+seconds, since `uv` downloads PyYAML — `~/.cache/uv` is not a named volume, so
+that repeats on every container recreation and needs network.
+
+`patterns.yaml` is the tuning surface. Note how the Bash hook matches
+`zeroAccessPaths`: a plain substring search over the whole command, so a literal
+entry blocks any command whose *text* merely contains it — a commit message, a PR
+body, a grep. Prefer globs, and keep that list to things worth the false
+positives. Env files are in neither `zeroAccessPaths` nor `readOnlyPaths` — agents
+are expected to read and edit them, since these containers hold local dev config,
+not production secrets.
+
 Originally vendored from [Gchahm/claude-code-damage-control](https://github.com/Gchahm/claude-code-damage-control)
 (`.claude/skills/damage-control/`); the build no longer clones it. Edit the files
 here to change behaviour — most tuning is `patterns.yaml`. Keep the `.py` files

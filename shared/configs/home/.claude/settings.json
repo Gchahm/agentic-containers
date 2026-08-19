@@ -69,16 +69,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /home/agent/.claude/hooks/post-tool-use.sh"
-          }
-        ]
-      }
-    ],
     "SubagentStart": [
       {
         "hooks": [
