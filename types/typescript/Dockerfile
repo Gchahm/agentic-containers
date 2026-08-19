@@ -214,30 +214,21 @@ RUN . "$NVM_DIR/nvm.sh" && nvm use 22 && \
     mkdir -p /opt/ac/claude/skills && \
     cp -r /home/agent/.claude/skills/. /opt/ac/claude/skills/
 
-# Install Claude Code Damage Control hooks from git
-RUN git clone --depth 1 https://github.com/Gchahm/claude-code-damage-control.git /tmp/damage-control && \
-    mkdir -p /home/agent/.claude/hooks/damage-control /opt/ac/claude/hooks/damage-control && \
-    cp /tmp/damage-control/.claude/skills/damage-control/hooks/damage-control-python/bash-tool-damage-control.py \
-       /tmp/damage-control/.claude/skills/damage-control/hooks/damage-control-python/edit-tool-damage-control.py \
-       /tmp/damage-control/.claude/skills/damage-control/hooks/damage-control-python/write-tool-damage-control.py \
-       /home/agent/.claude/hooks/damage-control/ && \
-    cp /tmp/damage-control/.claude/skills/damage-control/patterns.yaml \
-       /home/agent/.claude/hooks/damage-control/ && \
-    cp -r /home/agent/.claude/hooks/damage-control/. /opt/ac/claude/hooks/damage-control/ && \
-    rm -rf /tmp/damage-control
-
-# Copy all home configs (shell, git, ssh, gh, claude, tmux)
-COPY --chown=agent:agent configs/home/. /home/agent/
+# Copy home configs (shell, git, ssh, gh, claude, tmux) — shared first, type overrides on top
+COPY --chown=agent:agent shared/configs/home/. /home/agent/
+COPY --chown=agent:agent types/typescript/configs/home/. /home/agent/
 RUN chmod 700 /home/agent/.ssh && chmod 600 /home/agent/.ssh/config
 
 # Stage Claude configs (copied at startup due to bind mount)
-COPY --chown=agent:agent configs/home/.claude /opt/ac/claude
+COPY --chown=agent:agent shared/configs/home/.claude /opt/ac/claude
+COPY --chown=agent:agent types/typescript/configs/home/.claude /opt/ac/claude
 
 # Copy .extras if it exists
-COPY --chown=agent:agent .extra[s] /home/agent/
+COPY --chown=agent:agent types/typescript/.extra[s] /home/agent/
 
 # Copy user scripts (startup, help, yolo)
-COPY --chown=agent:agent scripts/home/. /usr/local/bin/
+COPY --chown=agent:agent shared/scripts/home/. /usr/local/bin/
+COPY --chown=agent:agent types/typescript/scripts/home/. /usr/local/bin/
 
 WORKDIR /home/agent/workspace
 
