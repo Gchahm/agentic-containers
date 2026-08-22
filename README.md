@@ -155,7 +155,7 @@ Shared by all types:
 - Debian (slim) base
 - PostgreSQL 18 (localhost:5432, user: `postgres`, password: `postgres`)
 - Claude Code CLI
-- GitHub CLI, AWS CLI v2, Terraform (override with `TERRAFORM_VERSION`), tmux, zsh + Pure prompt, neovim (upstream), uv, jq, rsync, cloudflared
+- GitHub CLI, AWS CLI v2, Terraform (override with `TERRAFORM_VERSION`), tmux, zsh + Pure prompt, neovim (upstream), uv, jq, rsync
 
 Type-specific:
 - **typescript**: Node.js 22 (default) + 24 via nvm, pnpm/npm, Playwright + Chromium

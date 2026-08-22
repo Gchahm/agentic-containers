@@ -18,9 +18,6 @@ mounts:
   - name: workspace
     type: bind
     container: /home/agent/workspace
-  - name: cloudflared
-    type: bind
-    container: /home/agent/.cloudflared
   - name: aws
     type: shared
     container: /home/agent/.aws
