@@ -32,13 +32,13 @@ Current types:
 - `dotnet` — .NET SDK 10 (override via `DOTNET_VERSION` env or `--build-arg`)
 - `go` — Go 1.25.0 on top of the typescript stack (Node 22/24, pnpm, Playwright)
 
-All types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, AWS CLI v2, Terraform, SSH server, tmux, zsh + Pure, neovim (upstream), uv, cloudflared, rsync.
+All types share: Debian slim base, PostgreSQL 18, Claude Code CLI, GitHub CLI, AWS CLI v2, Terraform, SSH server, tmux, zsh + Pure, neovim (upstream), uv, rsync.
 
 ## How It Works
 
 1. `ac build <type>` — builds the type's Docker image (e.g., `ts-agent`, `dotnet-agent`). The build context is the **repo root** with `-f types/<type>/Dockerfile`, so a Dockerfile can COPY from both `shared/` and `types/<type>/`; `.dockerignore` keeps the context small.
 2. `ac create <type> <name> [index]` — runs a container with port mappings derived from the type's `type.yaml` (base + index), mounts volumes, passes env vars from `.env`, installs SSH key, configures host SSH config. Labels the container with `ac_type=<type>`.
-3. Container startup — configures git auth, PostgreSQL, Claude Code, optional cloudflared, then `exec sshd`.
+3. Container startup — configures git auth, PostgreSQL, Claude Code, then `exec sshd`.
 4. User connects via `ac shell`, `ac open` (VS Code), or `ssh <name>` (config installed automatically).
 
 Other subcommands resolve the type from the container's `ac_type` label and default to `typescript` if missing (covers pre-multi-type containers).

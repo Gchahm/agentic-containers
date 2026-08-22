@@ -101,38 +101,17 @@ chmod 700 ~/.ssh 2>/dev/null || true
 unset GITHUB_USERNAME GIT_NAME GIT_EMAIL GITHUB_OAUTH_TOKEN
 
 # --------------------------------------------------------------------
-# PostgreSQL: either route localhost:5432 to RDS via Cloudflare Access
-# tunnel (when DB_TUNNEL_HOSTNAME + service token are set), or start the
-# local cluster as before. Apps always connect to localhost:5432.
+# PostgreSQL
 # --------------------------------------------------------------------
-if [[ -n "${DB_TUNNEL_HOSTNAME:-}" && -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
-    echo "[startup] DB_TUNNEL_HOSTNAME=${DB_TUNNEL_HOSTNAME} — routing localhost:5432 via Cloudflare Access tunnel"
-    # Stop any pre-existing local PostgreSQL so it doesn't grab IPv6 ::1:5432
-    # while cloudflared owns 127.0.0.1:5432 (psql defaults to IPv6 first).
-    sudo /usr/bin/pg_ctlcluster 18 main stop >/dev/null 2>&1 || true
-    # NODE_EXTRA_CA_CERTS is set via Dockerfile ENV — available to every
-    # process in the container regardless of how it was spawned.
-    nohup cloudflared access tcp \
-        --hostname "$DB_TUNNEL_HOSTNAME" \
-        --url localhost:5432 \
-        --service-token-id "$CF_ACCESS_CLIENT_ID" \
-        --service-token-secret "$CF_ACCESS_CLIENT_SECRET" \
-        > /tmp/cloudflared-rds.log 2>&1 &
-    echo "[startup] cloudflared access tunnel started (logs: /tmp/cloudflared-rds.log)"
-else
-    echo "[startup] Starting local PostgreSQL..."
-    sudo chown -R postgres:postgres /var/lib/postgresql/18/main
-    sudo /usr/bin/pg_ctlcluster 18 main start
+echo "[startup] Starting local PostgreSQL..."
+sudo chown -R postgres:postgres /var/lib/postgresql/18/main
+sudo /usr/bin/pg_ctlcluster 18 main start
 
-    echo "[startup] Waiting for PostgreSQL to be ready..."
-    timeout 30 bash -c 'until sudo pg_isready -h localhost >/dev/null 2>&1; do sleep 1; done'
+echo "[startup] Waiting for PostgreSQL to be ready..."
+timeout 30 bash -c 'until sudo pg_isready -h localhost >/dev/null 2>&1; do sleep 1; done'
 
-    sudo psql -U postgres -c "ALTER USER postgres PASSWORD 'postgres';" 2>/dev/null || true
-    echo "[startup] PostgreSQL is ready"
-fi
-
-# Clear the service token from env now that cloudflared has it
-unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+sudo psql -U postgres -c "ALTER USER postgres PASSWORD 'postgres';" 2>/dev/null || true
+echo "[startup] PostgreSQL is ready"
 
 # --------------------------------------------------------------------
 # MongoDB
@@ -159,26 +138,6 @@ if mongod --dbpath /var/lib/mongodb \
     echo "[startup] MongoDB is ready"
 else
     echo "[startup] WARNING: MongoDB failed to start (logs: /var/log/mongodb/mongod.log)" >&2
-fi
-
-# --------------------------------------------------------------------
-# Cloudflare Tunnel (auto-start if token file present)
-# --------------------------------------------------------------------
-if [[ -f ~/.cloudflared/token ]]; then
-    echo "[startup] Starting Cloudflare Tunnel..."
-    # Wait for virtiofs/bind mount to settle (token can be empty for a moment after boot)
-    cf_token=""
-    for i in {1..10}; do
-        cf_token="$(cat ~/.cloudflared/token 2>/dev/null)"
-        [[ -n "$cf_token" ]] && break
-        sleep 1
-    done
-    if [[ -n "$cf_token" ]]; then
-        nohup cloudflared tunnel run --token "$cf_token" > /tmp/cloudflared.log 2>&1 &
-        echo "[startup] cloudflared started (logs: /tmp/cloudflared.log)"
-    else
-        echo "[startup] WARNING: cloudflared token file present but empty -- skipping"
-    fi
 fi
 
 # --------------------------------------------------------------------

@@ -32,7 +32,7 @@ HOST="${PGHOST:-localhost}"
 PORT="${PGPORT:-5432}"
 ADMIN_USER="${PGUSER:-postgres}"
 ADMIN_PASSWORD="${PGPASSWORD:-}"
-SSL_MODE="${PGSSLMODE:-require}"  # for the script's OWN psql calls (against the local tunnel)
+SSL_MODE="${PGSSLMODE:-require}"  # for the script's OWN psql calls (against the local forward)
 RDS_HOSTNAME="${DB_RDS_HOSTNAME:-}"  # used in emitted URLs (sslmode=verify-full)
 
 usage() {
@@ -52,14 +52,12 @@ Options:
   --admin-user <u>       Default: \$PGUSER or postgres
   --admin-password <p>   Default: \$PGPASSWORD (prefer infra/.env)
   --sslmode <m>          For the script's OWN psql calls against the local
-                         tunnel. Default: require (no verification — fine for
-                         localhost). Set to verify-full only if your local
+                         port-forward. Default: require (no verification — fine
+                         for localhost). Set to verify-full only if your local
                          /etc/hosts maps the RDS hostname to 127.0.0.1.
   --rds-hostname <h>     RDS endpoint to embed in the emitted DATABASE_URL
                          lines. Default: \$DB_RDS_HOSTNAME. Required for the
-                         emitted URLs to support sslmode=verify-full (the
-                         container is set up to resolve this to 127.0.0.1
-                         via --add-host)
+                         emitted URLs to support sslmode=verify-full
   -h, --help
 
 Loads infra/.env automatically if present.
@@ -165,7 +163,7 @@ GRANT ALL ON SCHEMA public TO "$ROLE";
 SQL
 
   # Emitted URL uses the RDS hostname + sslmode=verify-full when DB_RDS_HOSTNAME
-  # is set, so apps inside containers (with --add-host) get full TLS verification.
+  # is set, so apps that can resolve that hostname get full TLS verification.
   # Falls back to localhost + sslmode=require when not set.
   if [[ -n "$RDS_HOSTNAME" ]]; then
     URL_HOST="$RDS_HOSTNAME"

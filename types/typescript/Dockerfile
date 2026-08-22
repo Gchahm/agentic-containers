@@ -72,14 +72,6 @@ RUN set -eux; \
     ln -s "/opt/nvim-linux-${nvim_arch}/bin/nvim" /usr/local/bin/nvim; \
     rm /tmp/nvim.tar.gz
 
-# Install cloudflared (for Cloudflare Tunnel webhook ingress)
-RUN set -eux; \
-    arch="$(dpkg --print-architecture)"; \
-    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}.deb" \
-      -o /tmp/cloudflared.deb; \
-    dpkg -i /tmp/cloudflared.deb; \
-    rm /tmp/cloudflared.deb
-
 # Install AWS CLI v2 (Debian has no v2 package; use the official installer)
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
@@ -129,7 +121,7 @@ RUN set -eux; \
     chown -R 1000:1000 /var/lib/mongodb /var/log/mongodb
 
 # Install AWS RDS global CA bundle into the system trust store so apps can
-# verify RDS server certs (sslmode=verify-ca) when tunneled through cloudflared.
+# verify RDS server certs (sslmode=verify-ca).
 # .NET / openssl / curl pick it up via update-ca-certificates; Node uses the
 # NODE_EXTRA_CA_CERTS env var set in the startup script.
 RUN curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \

@@ -39,7 +39,7 @@ Usage: $(basename "$0") --name <identifier> [options]
 
 Provisions a private RDS PostgreSQL instance. The instance is created
 with NO inbound rules on its security group — add those later via
-another script or grant access from a tunnel-connector SG.
+another script or grant access from a connector security group.
 
 Required:
   --name <id>            DB instance identifier
