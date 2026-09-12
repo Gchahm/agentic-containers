@@ -45,6 +45,9 @@ mounts:
   - name: nvim-data
     type: shared
     container: /home/agent/.local/share/nvim
+  - name: tmux-plugins
+    type: shared
+    container: /home/agent/.tmux/plugins
 
 resources:
   memory: 4g
