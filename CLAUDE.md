@@ -13,7 +13,6 @@ shared/                    Copied into every type's image first
   configs/home/            → /home/agent/ (.claude/ also staged to /opt/ac/claude)
     .zshrc .gitconfig .ssh/config .config/gh/ .tmux.conf .claude.json
     .claude/settings.json .claude/statusline.sh .claude/hooks/
-    .claude/hooks/damage-control/  Guardrail hooks + patterns.yaml (see below)
   scripts/home/            → /usr/local/bin/
     yolo
 types/
@@ -62,7 +61,6 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 - **Change container resources** — `resources:` in `types/<type>/type.yaml`
 - **Customize shell** — `shared/configs/home/.zshrc` (all types) or `types/<type>/configs/home/.zshenv` (one type)
 - **Customize Claude** — `shared/configs/home/.claude/settings.json` (all types) or `types/<type>/configs/home/.claude/CLAUDE.md` (one type)
-- **Change guardrails** — `shared/configs/home/.claude/hooks/damage-control/` (see below)
 
 To make a shared file differ for one type, copy it into that type's `configs/home/`
 or `scripts/home/` at the same relative path — the per-type COPY runs second and wins.
@@ -73,31 +71,3 @@ or `scripts/home/` at the same relative path — the per-type COPY runs second a
 2. Edit `types/<newtype>/type.yaml` — set `name`, `image_name`, port `host_base`s (unique across types)
 3. Edit `types/<newtype>/Dockerfile` — add `LABEL ac_type=<newtype>`, install the toolchain you need, and repoint the `COPY … types/typescript/…` lines at `types/<newtype>/`
 4. `ac build <newtype>` then `ac create <newtype> <name>`
-
-## Guardrails (damage control hooks)
-
-`PreToolUse` hooks that block destructive Bash/Edit/Write calls. They live in this
-repo at `shared/configs/home/.claude/hooks/damage-control/` — three Python hook
-scripts plus `patterns.yaml` — and reach the container through the normal config
-copy (`configs/home/.` → `/home/agent/`, `configs/home/.claude` → `/opt/ac/claude`,
-which `startup` syncs into `~/.claude` on every boot). `settings.json` wires them
-up via `uv run .../<tool>-tool-damage-control.py`.
-
-Cost, measured warm: ~48 ms before each Bash call, ~32 ms before each Edit/Write
-(~13 ms of it is `uv` startup, most of the rest is re-parsing `patterns.yaml` and
-recompiling its ~120 regexes every call). The first call in a fresh container is
-seconds, since `uv` downloads PyYAML — `~/.cache/uv` is not a named volume, so
-that repeats on every container recreation and needs network.
-
-`patterns.yaml` is the tuning surface. Note how the Bash hook matches
-`zeroAccessPaths`: a plain substring search over the whole command, so a literal
-entry blocks any command whose *text* merely contains it — a commit message, a PR
-body, a grep. Prefer globs, and keep that list to things worth the false
-positives. Env files are in neither `zeroAccessPaths` nor `readOnlyPaths` — agents
-are expected to read and edit them, since these containers hold local dev config,
-not production secrets.
-
-Originally vendored from [Gchahm/claude-code-damage-control](https://github.com/Gchahm/claude-code-damage-control)
-(`.claude/skills/damage-control/`); the build no longer clones it. Edit the files
-here to change behaviour — most tuning is `patterns.yaml`. Keep the `.py` files
-executable.
