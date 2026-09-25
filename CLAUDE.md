@@ -27,7 +27,7 @@ types/
 ```
 
 Current types:
-- `typescript` — Node.js 22/24, pnpm, Playwright + Chromium, MongoDB 8.2
+- `typescript` — Node.js 22/24, pnpm, Playwright + Chromium
 - `dotnet` — .NET SDK 10 (override via `DOTNET_VERSION` env or `--build-arg`)
 - `go` — Go 1.25.0 on top of the typescript stack (Node 22/24, pnpm, Playwright)
 
@@ -45,7 +45,7 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 ## Key Design Decisions
 
 - **Shared configs + per-type overrides** — anything identical across types lives in `shared/`; `types/<type>/configs` and `types/<type>/scripts` hold only files that genuinely differ (today `.zshenv`, `.claude/CLAUDE.md`, `startup`, `help`). Each Dockerfile copies `shared/` first, then its own dir on top, so a per-type file wins by overwriting. Dockerfiles stay per-type — that's where the real divergence is.
-- **Single index pool across types** — `ac_index` is unique across the entire `ac_agent` label set. Per-type port ranges (typescript 2600/3000/5600/27000, dotnet 2700/5000/5700, go 2800/8080/5900) avoid clashes within an index.
+- **Single index pool across types** — `ac_index` is unique across the entire `ac_agent` label set. Per-type port ranges (typescript 2600/3000/5600, dotnet 2700/5000/5700, go 2800/8080/5900) avoid clashes within an index.
 - **Bind mount for workspace** — persists at `~/.config/ac/agents/<name>/workspace/`.
 - **Shared mounts for Claude + nvim + AWS** — all containers share at `~/.config/ac/shared/<name>/` so credentials, nvim config, and plugin data persist across types and containers. `~/.aws` is shared, so one `aws configure` / SSO login covers every container.
 - **Named volumes** — language stores (pnpm, nuget), postgres data, zsh history survive container recreation.
@@ -54,7 +54,7 @@ Other subcommands resolve the type from the container's `ac_type` label and defa
 ## Modifying a Type
 
 - **Add system packages** — edit `apt-get install` in `types/<type>/Dockerfile`
-- **Change runtime version** — typescript: nvm lines, `MONGODB_VERSION` ARG (with `MONGODB_KEY_VERSION` for the repo signing key, which lags the release); dotnet: `DOTNET_VERSION` ARG / .env; terraform (all types): `TERRAFORM_VERSION` ARG / .env
+- **Change runtime version** — typescript: nvm lines; dotnet: `DOTNET_VERSION` ARG / .env; terraform (all types): `TERRAFORM_VERSION` ARG / .env
 - **Add services** — edit `types/<type>/scripts/home/startup` (start before sshd exec)
 - **Add ports** — `ports:` in `types/<type>/type.yaml`
 - **Add persistent storage** — `mounts:` in `types/<type>/type.yaml`
