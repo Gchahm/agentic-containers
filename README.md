@@ -161,6 +161,32 @@ Type-specific:
 - **typescript**: Node.js 22 (default) + 24 via nvm, pnpm/npm, Playwright + Chromium
 - **dotnet**: .NET SDK 10 (override with `DOTNET_VERSION`)
 
+## Secrets proxy
+
+API secrets never enter the agent containers. A single `ac-proxy` container (mitmproxy, started automatically by `ac create`) holds the real values; every agent container gets a placeholder such as `GH_TOKEN=ac-placeholder-GH_TOKEN` and sends HTTPS through the proxy, which swaps in the real value — only for the hosts that secret is bound to. A placeholder sent anywhere else stays a placeholder.
+
+To add a secret:
+
+1. Put the real value in `.env`: `export JEV_API_KEY="..."`
+2. Bind it to its API host(s) in `proxy/secrets.conf`: `JEV_API_KEY  api.jev.example`
+3. `ac proxy restart`, then `ac upgrade <name>` for containers that need the new variable
+
+```bash
+ac proxy status     # which secrets the proxy holds, and for which hosts
+ac proxy restart    # apply changes to .env / proxy/secrets.conf
+ac proxy logs       # one line per injection (never the values)
+```
+
+Limits:
+
+- **HTTPS APIs only.** A secret used locally or over another protocol (a database password, a signing key) cannot be protected this way.
+- **Use, not possession.** Code in a container can still call the API with the secret's permissions while the proxy is up, so keep keys narrowly scoped.
+- **Proxy-aware clients only.** Tools that ignore `HTTPS_PROXY` send the placeholder directly and fail to authenticate. A browser (Playwright) will not trust the proxy's certificate for the bound hosts.
+- **Not covered:** the SSH key mounted for git, and Claude credentials from `ac sync-auth`. Claude tokens set in `.env` can be moved behind the proxy by uncommenting their lines in `proxy/secrets.conf`.
+- TLS is intercepted only for the hosts in `proxy/secrets.conf`; all other traffic is tunnelled untouched. The CA lives in `~/.config/ac/proxy/` and only its public certificate is mounted into containers.
+
+Set `AC_PROXY=0` in `.env` to turn the proxy off and pass real values into the containers instead.
+
 ## Persistent data
 
 - **Workspace** — bind-mounted at `~/.config/ac/agents/<name>/workspace/`

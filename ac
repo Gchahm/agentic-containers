@@ -10,6 +10,13 @@ AC_CONFIG_DIR="${HOME}/.config/ac"
 AC_LABEL="ac_agent"
 DEFAULT_TYPE="typescript"
 
+AC_NETWORK="ac-network"
+AC_PROXY_NAME="ac-proxy"
+AC_PROXY_PORT=8080
+AC_PROXY_DIR="${AC_CONFIG_DIR}/proxy"
+AC_PROXY_CA="${AC_PROXY_DIR}/mitmproxy-ca-cert.pem"
+AC_SECRETS_CONF="${AC_DIR}/proxy/secrets.conf"
+
 type_dir() {
   echo "${AC_DIR}/types/${1}"
 }
@@ -46,6 +53,117 @@ container_type() {
 list_types() {
   find "${AC_DIR}/types" -maxdepth 2 -name type.yaml 2>/dev/null \
     | sed "s|${AC_DIR}/types/||; s|/type.yaml||" | sort
+}
+
+# ============================================================================
+# Secrets proxy
+# ============================================================================
+# Real secret values live only in the ac-proxy container. Agent containers get
+# ac-placeholder-<VAR> and send HTTPS through the proxy, which swaps in the real
+# value for the hosts listed in proxy/secrets.conf.
+
+load_env() {
+  if [[ -f "${AC_DIR}/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "${AC_DIR}/.env"
+    set +a
+  fi
+}
+
+ensure_network() {
+  if ! docker network inspect "$AC_NETWORK" >/dev/null 2>&1; then
+    docker network create "$AC_NETWORK"
+  fi
+}
+
+proxy_enabled() {
+  [[ "${AC_PROXY:-1}" != "0" && -f "$AC_SECRETS_CONF" ]]
+}
+
+# Names of the secrets.conf variables that have a value in the environment.
+proxied_secrets() {
+  local var hosts
+  while read -r var hosts _; do
+    [[ -z "$var" || "$var" == \#* ]] && continue
+    [[ "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    if [[ -n "${!var:-}" ]]; then echo "$var"; fi
+  done < "$AC_SECRETS_CONF"
+  return 0
+}
+
+proxy_config_hash() {
+  local var
+  {
+    cat "$AC_SECRETS_CONF" "${AC_DIR}/proxy/inject.py"
+    echo "${AC_PROXY_IMAGE:-}"
+    for var in $(proxied_secrets); do printf '%s=%s\n' "$var" "${!var}"; done
+  } | if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1
+}
+
+start_proxy() {
+  local image="${AC_PROXY_IMAGE:-mitmproxy/mitmproxy:12.2.3}"
+  ensure_network
+  mkdir -p "$AC_PROXY_DIR"
+  docker rm -f "$AC_PROXY_NAME" >/dev/null 2>&1 || true
+
+  local args=(--name "$AC_PROXY_NAME" --hostname "$AC_PROXY_NAME")
+  args+=(--label "ac_proxy=true" --label "ac_proxy_config=$(proxy_config_hash)")
+  args+=(--restart=unless-stopped --network "$AC_NETWORK" --memory=512m)
+  args+=(-v "${AC_PROXY_DIR}:/home/mitmproxy/.mitmproxy")
+  args+=(-v "${AC_DIR}/proxy:/addon:ro")
+  args+=(-e PYTHONUNBUFFERED=1)
+  # Name-only -e takes the value from our environment, keeping it off the command line
+  local var
+  for var in $(proxied_secrets); do args+=(-e "$var"); done
+
+  echo "Starting secrets proxy (${AC_PROXY_NAME})..."
+  docker run -d "${args[@]}" "$image" \
+    mitmdump --listen-port "$AC_PROXY_PORT" -s /addon/inject.py --set flow_detail=0 >/dev/null
+
+  # The CA is generated on first start; agent containers mount its public cert
+  local i
+  for i in {1..30}; do
+    [[ -s "$AC_PROXY_CA" ]] && return 0
+    sleep 1
+  done
+  echo "Secrets proxy did not come up. Check: ac proxy logs"
+  return 1
+}
+
+# Start the proxy if it is missing, stopped, or running with an outdated config.
+ensure_proxy() {
+  local running current
+  running=$(docker inspect --format '{{.State.Running}}' "$AC_PROXY_NAME" 2>/dev/null || true)
+  current=$(docker inspect --format '{{index .Config.Labels "ac_proxy_config"}}' "$AC_PROXY_NAME" 2>/dev/null || true)
+  if [[ "$running" == "true" && "$current" == "$(proxy_config_hash)" && -s "$AC_PROXY_CA" ]]; then
+    return 0
+  fi
+  start_proxy
+}
+
+do_proxy() {
+  case "${1:-}" in
+    start)   load_env; ensure_proxy ;;
+    restart) load_env; start_proxy ;;
+    stop)    docker rm -f "$AC_PROXY_NAME" >/dev/null 2>&1 || true; echo "Secrets proxy stopped" ;;
+    logs)    docker logs -f "$AC_PROXY_NAME" ;;
+    status)
+      load_env
+      local state
+      state=$(docker inspect --format '{{.State.Status}}' "$AC_PROXY_NAME" 2>/dev/null || echo "not created")
+      echo "Proxy: ${state}"
+      if [[ "${AC_PROXY:-1}" == "0" ]]; then echo "Disabled by AC_PROXY=0 (containers get real values)"; fi
+      echo "Secrets held by the proxy:"
+      local var found=0
+      for var in $(proxied_secrets); do
+        echo "  - ${var} -> $(awk -v v="$var" '$1 == v { print $2 }' "$AC_SECRETS_CONF")"
+        found=1
+      done
+      if [[ "$found" -eq 0 ]]; then echo "  (none)"; fi
+      ;;
+    *) echo "Usage: ac proxy <start|stop|restart|status|logs>"; exit 1 ;;
+  esac
 }
 
 # ============================================================================
@@ -193,16 +311,24 @@ do_create() {
     fi
   fi
 
-  # Create network if needed
-  if ! docker network inspect ac-network >/dev/null 2>&1; then
-    docker network create ac-network
+  ensure_network
+
+  # Secrets listed in proxy/secrets.conf reach the container as placeholders;
+  # the proxy holds the real values (AC_PROXY=0 passes them through instead)
+  local conf_secrets="" use_proxy=0
+  if [[ -f "$AC_SECRETS_CONF" ]]; then
+    conf_secrets=$(proxied_secrets)
+  fi
+  if proxy_enabled && [[ -n "$conf_secrets" ]]; then
+    ensure_proxy
+    use_proxy=1
   fi
 
   # Build docker run arguments
   local docker_args=()
   docker_args+=(--name "${NAME}" --hostname "${NAME}")
   docker_args+=(--label "${AC_LABEL}=true" --label "ac_index=${INSTANCE}" --label "ac_type=${TYPE}")
-  docker_args+=(--restart=unless-stopped --network ac-network)
+  docker_args+=(--restart=unless-stopped --network "$AC_NETWORK")
 
   # Resources from type.yaml
   local memory cpus
@@ -222,14 +348,41 @@ do_create() {
   docker_args+=(-e "GIT_NAME=${GIT_NAME:-Agent}")
   docker_args+=(-e "GIT_EMAIL=${GIT_EMAIL:-agent@example.com}")
   docker_args+=(-e "GITHUB_USERNAME=${GITHUB_USERNAME:-}")
-  docker_args+=(-e "GH_TOKEN=${GH_TOKEN:-}")
-  docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
-  docker_args+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}")
-  docker_args+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
   docker_args+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}")
   docker_args+=(-e "RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER:-}")
   docker_args+=(-e "RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS:-}")
   docker_args+=(-e "DRAGONFLY_PASSWORD=${DRAGONFLY_PASSWORD:-}")
+
+  # API secrets: the real value, or a placeholder when the proxy holds it.
+  # AC_PERSIST_ENV names extra vars for startup to persist into SSH sessions.
+  local var persist=""
+  for var in GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY; do
+    if [[ " ${conf_secrets//$'\n'/ } " == *" ${var} "* ]]; then continue; fi
+    docker_args+=(-e "${var}=${!var:-}")
+  done
+  for var in $conf_secrets; do
+    if [[ "$use_proxy" -eq 1 ]]; then
+      docker_args+=(-e "${var}=ac-placeholder-${var}")
+    else
+      docker_args+=(-e "${var}=${!var}")
+    fi
+    persist+=" ${var}"
+  done
+  if [[ "$use_proxy" -eq 1 ]]; then
+    local proxy_url="http://${AC_PROXY_NAME}:${AC_PROXY_PORT}"
+    local ca_bundle="/etc/ssl/certs/ca-certificates.crt"
+    local no_proxy_hosts="localhost,127.0.0.1,::1"
+    docker_args+=(-e "HTTPS_PROXY=${proxy_url}" -e "https_proxy=${proxy_url}")
+    docker_args+=(-e "NO_PROXY=${no_proxy_hosts}" -e "no_proxy=${no_proxy_hosts}")
+    # Node ignores proxy env vars and the system trust store unless told otherwise
+    docker_args+=(-e "NODE_USE_ENV_PROXY=1" -e "NODE_EXTRA_CA_CERTS=${ca_bundle}")
+    docker_args+=(-e "REQUESTS_CA_BUNDLE=${ca_bundle}")
+    persist+=" HTTPS_PROXY https_proxy NO_PROXY no_proxy NODE_USE_ENV_PROXY NODE_EXTRA_CA_CERTS REQUESTS_CA_BUNDLE"
+    # startup adds this CA to the system trust store
+    docker_args+=(-v "${AC_PROXY_CA}:/usr/local/share/ca-certificates/ac-proxy.crt:ro")
+    echo "Secrets held by proxy: ${conf_secrets//$'\n'/ }"
+  fi
+  docker_args+=(-e "AC_PERSIST_ENV=${persist# }")
 
   # Mount host SSH private key into container for git/gh (read-only)
   if [[ -r "${HOME}/.ssh/${SSH_LOGIN_PRIV}" ]]; then
@@ -796,6 +949,8 @@ Commands:
   open <name> [repo]               Open in VS Code via SSH
   setup-ssh <name> [port]          Setup SSH config
   sync-auth                        Sync Claude auth from macOS Keychain
+  proxy <start|stop|restart|status|logs>
+                                   Manage the secrets proxy (proxy/secrets.conf)
   clone <name> <repo-urls...>      Clone repos into container
   run [-f] <name> <repo> <task>    Run Claude in a repo
   logs <name>                      View container logs
@@ -830,6 +985,7 @@ case "${1:-}" in
   open)      [[ -z "${2:-}" ]] && { echo "Usage: ac open <name> [repo]"; exit 1; }; do_open "$2" "${3:-}" ;;
   setup-ssh) [[ -z "${2:-}" ]] && { echo "Usage: ac setup-ssh <name> [port]"; exit 1; }; do_setup_ssh "$2" "${3:-}" ;;
   sync-auth) do_sync_auth ;;
+  proxy)     do_proxy "${2:-}" ;;
   info)      [[ -z "${2:-}" ]] && { echo "Usage: ac info <name>"; exit 1; }; do_info "$2" ;;
   logs)      [[ -z "${2:-}" ]] && { echo "Usage: ac logs <name>"; exit 1; }; docker logs -f "$2" ;;
   run)       shift; do_run "$@" ;;
