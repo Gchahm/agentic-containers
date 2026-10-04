@@ -37,3 +37,10 @@ Logs are at `/var/log/mongodb/mongod.log`.
 
 - `yolo` -- Launch Claude Code with --dangerously-skip-permissions
 - `help` -- Show available commands
+
+## Secrets
+
+API secrets such as `GH_TOKEN` may hold a placeholder (`ac-placeholder-<VAR>`). This
+is expected: HTTPS goes through a proxy (`HTTPS_PROXY`) that swaps in the real value
+for that secret's own API hosts, so `gh`, `git` and SDKs work as usual. The real
+values are not available inside the container.

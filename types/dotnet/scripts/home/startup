@@ -7,6 +7,15 @@ umask 077
 
 echo "[startup] Configuring agent..."
 
+# Trust the ac secrets-proxy CA (bind-mounted by `ac create` when the proxy is in
+# use). Must run before anything below makes an HTTPS request.
+if [[ -f /usr/local/share/ca-certificates/ac-proxy.crt ]]; then
+    echo "[startup] Trusting secrets proxy CA..."
+    # umask 022 so the regenerated bundle stays world-readable
+    (umask 022; sudo /usr/sbin/update-ca-certificates >/dev/null 2>&1) \
+        || echo "[startup] WARNING: could not install proxy CA -- HTTPS to proxied hosts will fail" >&2
+fi
+
 # Fix ownership of Docker named volumes (created as root on first mount)
 for dir in ~/.nuget ~/.dotnet /data/rabbitmq /data/redis; do
     if [[ -d "$dir" ]] && [[ "$(stat -c '%U' "$dir" 2>/dev/null)" != "agent" ]]; then
@@ -30,7 +39,7 @@ cp -r /opt/ac/claude/hooks ~/.claude/ 2>/dev/null || true
 # Persist runtime env vars for SSH login shells
 # (/etc/environment is made writable by agent in Dockerfile)
 echo "[startup] Writing /etc/environment..."
-for var in CONTAINER_NAME GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL DOTNET_ROOT DOTNET_CLI_TELEMETRY_OPTOUT DOTNET_NOLOGO; do
+for var in CONTAINER_NAME GH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL DOTNET_ROOT DOTNET_CLI_TELEMETRY_OPTOUT DOTNET_NOLOGO ${AC_PERSIST_ENV:-}; do
     val="${!var:-}"
     if [[ -n "$val" ]]; then
         grep -q "^${var}=" /etc/environment 2>/dev/null && \

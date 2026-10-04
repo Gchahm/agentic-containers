@@ -151,7 +151,7 @@ RUN set -eux; \
 
 # Create agent user with targeted sudo permissions
 RUN useradd -m -s /bin/zsh -u 1000 agent && \
-    echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sshd, /usr/bin/pg_ctlcluster, /usr/bin/pg_isready, /usr/bin/psql, /usr/bin/chown, /usr/sbin/rabbitmq-server, /usr/sbin/rabbitmqctl, /usr/sbin/rabbitmq-plugins" \
+    echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sshd, /usr/bin/pg_ctlcluster, /usr/bin/pg_isready, /usr/bin/psql, /usr/bin/chown, /usr/sbin/update-ca-certificates, /usr/sbin/rabbitmq-server, /usr/sbin/rabbitmqctl, /usr/sbin/rabbitmq-plugins" \
       > /etc/sudoers.d/agent && \
     chmod 0440 /etc/sudoers.d/agent && \
     chown -R agent:agent /data /var/lib/rabbitmq /etc/rabbitmq
