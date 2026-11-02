@@ -62,7 +62,7 @@ mounts:
     container: /home/agent/.tmux/plugins
 
 resources:
-  memory: 4g
+  memory: 10g
   cpus: 2
 
 required_env:
